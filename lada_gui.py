@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (20251001-2)")
+        self.root.title("動画モザイク除去 GUI (20251001-3)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -360,8 +360,8 @@ class MosaicRemoverApp:
         self.status_label = tk.Label(control_frame, text="準備完了", fg="blue")
         self.status_label.pack(side=tk.LEFT, padx=5)
         
-        self.quit_button = tk.Button(control_frame, text="終了", command=self.on_closing, bg="red", fg="white")
-        self.quit_button.pack(side=tk.RIGHT, padx=5)
+        self.abort_button = tk.Button(control_frame, text="中断", command=self.abort_processing, bg="orange", fg="white")
+        self.abort_button.pack(side=tk.RIGHT, padx=5)
 
         time_display_frame = tk.Frame(preview_frame)
         time_display_frame.grid(row=5, column=0, pady=2, padx=100)
@@ -377,6 +377,43 @@ class MosaicRemoverApp:
 
         self.console_text = scrolledtext.ScrolledText(lada_info_frame, height=5, state=tk.DISABLED)
         self.console_text.pack(fill=tk.BOTH, expand=True, pady=10)
+    
+    def abort_processing(self):
+        """処理を中断し、LADAプロセスをKILLして待機状態に戻す"""
+        if not (hasattr(self, 'is_running') and self.is_running) and \
+           not (hasattr(self, 'is_batch_processing') and self.is_batch_processing):
+            messagebox.showinfo("情報", "現在、処理は実行されていません。")
+            return
+        
+        if not messagebox.askyesno("確認", "現在実行中の処理を中断しますか？"):
+            return
+        
+        # LADAプロセスをKILL
+        if self.process and self.process.poll() is None:
+            self.process.kill()
+            self.write_log("LADAプロセスを強制終了しました")
+        
+        # バッチ処理中の場合はフラグをリセット
+        self.is_batch_processing = False
+        self.is_running = False
+        self.buffer_running = False
+        
+        # ボタンを処理待ち状態に戻す
+        self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
+        self.batch_button.config(state=tk.NORMAL)
+        self.queue_add_button.config(state=tk.NORMAL)
+        self.queue_view_button.config(state=tk.NORMAL)
+        self.root.bind('<Control-e>', self.add_to_queue)
+        
+        # ステータス表示を更新
+        self.status_label.config(text="処理を中断しました", fg="red")
+        self.batch_count_label.config(text="")
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, "処理を中断しました。\n")
+        self.console_text.config(state=tk.DISABLED)
+        
+        self.write_log("処理を中断しました")
+        messagebox.showinfo("中断完了", "処理を中断しました。")
         
     def add_to_queue(self, event=None):
         if self.is_batch_processing:
@@ -1668,7 +1705,7 @@ class MosaicRemoverApp:
             total_time_sec = self.video_total_frames / self.video_fps if self.video_fps > 0 else 0
             current_time_str = self.format_time(current_time_sec)
             total_time_str = self.format_time(total_time_sec)
-            self.current_time_label.config(text=f"{current_time_str} / {total_time_str}")
+            self.current_time_label.config(text=f"{current__time_str} / {total_time_str}")
             
             start_time_sec = self.start_frame / self.video_fps if self.video_fps > 0 else 0
             end_time_sec = self.end_frame / self.video_fps if self.video_fps > 0 else 0
