@@ -1705,7 +1705,7 @@ class MosaicRemoverApp:
             total_time_sec = self.video_total_frames / self.video_fps if self.video_fps > 0 else 0
             current_time_str = self.format_time(current_time_sec)
             total_time_str = self.format_time(total_time_sec)
-            self.current_time_label.config(text=f"{current__time_str} / {total_time_str}")
+            self.current_time_label.config(text=f"{current_time_str} / {total_time_str}")
             
             start_time_sec = self.start_frame / self.video_fps if self.video_fps > 0 else 0
             end_time_sec = self.end_frame / self.video_fps if self.video_fps > 0 else 0
