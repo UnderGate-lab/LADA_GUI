@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (20250930-4)")
+        self.root.title("動画モザイク除去 GUI (20251001-1)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -602,9 +602,11 @@ class MosaicRemoverApp:
         
         import re
         
+        # まず{}で囲まれたパスを抽出して処理
         brace_pattern = r'\{([^}]+)\}'
         braced_paths = re.findall(brace_pattern, file_paths_str)
         
+        # {}で囲まれたパスを一時的にプレースホルダーに置き換え
         temp_str = file_paths_str
         placeholder_map = {}
         for i, path in enumerate(braced_paths):
@@ -612,20 +614,48 @@ class MosaicRemoverApp:
             temp_str = temp_str.replace(f"{{{path}}}", placeholder)
             placeholder_map[placeholder] = path
         
-        words = temp_str.split()
+        # 全角スペース(\u3000)で分割
+        # 注: event.dataでは\u3000がエスケープ文字列として渡される場合と実際の全角スペースとして渡される場合がある
+        ideographic_space = '\u3000'
+        parts = re.split(r'[\s\u3000]+', temp_str)
         
-        for word in words:
-            if word.startswith("__PLACEHOLDER_"):
-                original_path = placeholder_map[word]
-                path = original_path.strip()
-                if os.path.exists(path) and path.lower().endswith(valid_extensions):
-                    file_paths.append(path)
-                    self.write_log(f"Valid path found (braced): {path}")
-            else:
-                path = word.strip()
-                if os.path.exists(path) and path.lower().endswith(valid_extensions):
-                    file_paths.append(path)
-                    self.write_log(f"Valid path found (space-separated): {path}")
+        # 分割されたパーツを再結合してパスを復元
+        potential_paths = []
+        for part in parts:
+            if part.strip():
+                if part.startswith("__PLACEHOLDER_"):
+                    # プレースホルダーの場合は元のパスを使用
+                    original_path = placeholder_map[part]
+                    potential_paths.append(original_path)
+                else:
+                    potential_paths.append(part)
+        
+        # パスを検証（分割されたパーツを結合しながら検証）
+        i = 0
+        while i < len(potential_paths):
+            current_path = potential_paths[i]
+            
+            # 既に有効なパスかチェック
+            if os.path.exists(current_path) and current_path.lower().endswith(valid_extensions):
+                file_paths.append(current_path)
+                self.write_log(f"Valid path found: {current_path}")
+                i += 1
+                continue
+            
+            # 有効でない場合、次のパーツと結合して再試行
+            found = False
+            for j in range(i + 1, len(potential_paths) + 1):
+                # 全角スペースで結合
+                combined_path = ideographic_space.join(potential_paths[i:j])
+                if os.path.exists(combined_path) and combined_path.lower().endswith(valid_extensions):
+                    file_paths.append(combined_path)
+                    self.write_log(f"Valid path found (reconstructed): {combined_path}")
+                    i = j
+                    found = True
+                    break
+            
+            if not found:
+                i += 1
         
         if not file_paths:
             self.write_log("D&Dエラー: 有効なファイルが見つかりません")
@@ -634,6 +664,7 @@ class MosaicRemoverApp:
         
         self.write_log(f"Final parsed file paths: {file_paths}")
         
+        # 単一ファイルの場合
         if len(file_paths) == 1:
             file_path = file_paths[0]
             self.write_log(f"単一ファイル処理: {file_path}")
@@ -646,6 +677,7 @@ class MosaicRemoverApp:
             self.write_log(f"単一ファイルD&D: {os.path.basename(file_path)} をプレビューにロード")
             return
         
+        # 複数ファイルの場合
         if not messagebox.askyesno("確認", f"{len(file_paths)}個のファイルが指定されました。キューに登録しますか?"):
             self.write_log("D&Dキャンセル: ユーザーがキュー登録を拒否しました")
             return
@@ -696,7 +728,7 @@ class MosaicRemoverApp:
         else:
             self.write_log("D&Dエラー: 有効な動画ファイルがありません")
             messagebox.showerror("エラー", "有効な動画ファイルがドロップされませんでした。")
-
+        
     def load_video(self, file_path):
         with self.cap_lock:
             if self.cap:
