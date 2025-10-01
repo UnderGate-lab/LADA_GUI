@@ -60,7 +60,7 @@ lada簡易GUI解説
 　切り出し動画はffmpegの次のオプションで実行（プログラム内にハードコード）
 　　　コピーのみ：-c copy
 　　　コピー＋タイムスタンプ補正：-c copy -fflags +genpts
-　　　再エンコード：-c:v h264_nvenc -c:a aac -preset fast -rc vbr_hq -cq 19
+　　　再エンコード：-c:v h264_nvenc -c:a aac -preset fast -rc vbr_hq -crf <設定値>
 　
 　ウィンドウの下方にlada本体の処理状況を表示しています。
 　エラーが発生した場合はこちらを参考にしてください。
@@ -103,7 +103,7 @@ lada簡易GUI解説
 20250925 一括処理改善、UX改善、信頼性対策（Grok, Claude, ChatGPT）
 20250927 プレビューフルスクリーン対応、ショートカット追加（Grok, Claude）
 20250929 複数ファイルD&D一括登録、動画切り出し処理変更（映像品質向上）、ショートカット追加（Grok, Claude）
-20251001 バグ修正（D&D、リネームエラー時の処理後ファイル喪失）（Claude）
+20251001 バグ修正（D&D、リネームエラー時の処理後ファイル喪失）、切り出し動画品質指定追加（Claude）
 
 いろいろなAIを利用してVibeコーディング by undergate.
 

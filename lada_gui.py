@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (20251001-1)")
+        self.root.title("動画モザイク除去 GUI (20251001-2)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -50,7 +50,8 @@ class MosaicRemoverApp:
         self.cli_options = {
             "model_choice": "1",
             "tvai_choice": "2",
-            "quality": "15"
+            "quality": "15",
+            "crf_value": "19"
         }
         self.processing_queue = self.load_queue()
         self.is_batch_processing = False
@@ -100,8 +101,8 @@ class MosaicRemoverApp:
         window.bind(';', self.move_one_second_forward)
         window.bind('<Home>', lambda e: self.set_frame_and_start(0))
         window.bind('<End>', lambda e: self.set_frame_and_end(self.video_total_frames))
-        window.bind('s', self.jump_to_video_start)  # 修正: 動画の先頭に移動
-        window.bind('e', self.jump_to_video_end)    # 修正: 動画の末尾に移動
+        window.bind('s', self.jump_to_video_start)
+        window.bind('e', self.jump_to_video_end)
         for i in range(1, 10):
             window.bind(str(i), lambda e, percentage=i*10: self.jump_to_percentage(percentage))
 
@@ -262,7 +263,7 @@ class MosaicRemoverApp:
         self.tvai_menu = tk.OptionMenu(options_frame, self.tvai_var, "1", "2")
         self.tvai_menu.pack(side=tk.LEFT, padx=5)
         
-        quality_label = tk.Label(options_frame, text="映像品質(5-30):")
+        quality_label = tk.Label(options_frame, text="映像品質CRF(5-30):")
         quality_label.pack(side=tk.LEFT, padx=(15, 5))
         self.quality_var = tk.StringVar(value=self.cli_options["quality"])
         self.quality_var.trace_add("write", self.save_config_callback)
@@ -324,6 +325,14 @@ class MosaicRemoverApp:
         tk.Radiobutton(ffmpeg_frame, text="-c copy (高速)", variable=self.ffmpeg_option_var, value="copy").pack(side=tk.LEFT, padx=5)
         tk.Radiobutton(ffmpeg_frame, text="-c copy +genpts (タイムスタンプ修正)", variable=self.ffmpeg_option_var, value="copy_genpts").pack(side=tk.LEFT, padx=5)
         tk.Radiobutton(ffmpeg_frame, text="再エンコード (NVENC)", variable=self.ffmpeg_option_var, value="re_encode").pack(side=tk.LEFT, padx=5)
+        
+        crf_label = tk.Label(ffmpeg_frame, text="映像品質CRF(5-30):")
+        crf_label.pack(side=tk.LEFT, padx=(15, 5))
+        self.crf_var = tk.StringVar(value=self.cli_options["crf_value"])
+        self.crf_var.trace_add("write", self.save_config_callback)
+        crf_values = [str(i) for i in range(5, 31)]
+        self.crf_menu = tk.OptionMenu(ffmpeg_frame, self.crf_var, *crf_values)
+        self.crf_menu.pack(side=tk.LEFT, padx=5)
         
         self.batch_count_label = tk.Label(ffmpeg_frame, text="", fg="blue")
         self.batch_count_label.pack(side=tk.RIGHT, padx=5)
@@ -398,7 +407,8 @@ class MosaicRemoverApp:
             'ffmpeg_option': self.ffmpeg_option_var.get(),
             'save_trimmed': self.save_trimmed_video_var.get(),
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'fps': fps
+            'fps': fps,
+            'crf_value': int(self.crf_var.get())
         }
         
         self.processing_queue.append(queue_entry)
@@ -490,8 +500,9 @@ class MosaicRemoverApp:
                 end_time = self.format_time(entry['end_frame'] / fps if fps > 0 else 0)
                 ffmpeg_option = ffmpeg_display_map.get(entry['ffmpeg_option'], entry['ffmpeg_option'])
                 save_trimmed = '保存する' if entry['save_trimmed'] else '保存しない'
+                crf_value = entry.get('crf_value', 19)
                 display_text = (f"{i+1}. {filename}, Model:{model}, TVAI:{tvai}, Quality:{quality}, "
-                               f"Range:{start_time}-{end_time}, FFmpeg:{ffmpeg_option}, SaveTrim:{save_trimmed}")
+                               f"Range:{start_time}-{end_time}, FFmpeg:{ffmpeg_option}, CRF:{crf_value}, SaveTrim:{save_trimmed}")
                 self.queue_listbox.insert(tk.END, display_text)
             except Exception as e:
                 self.queue_listbox.insert(tk.END, f"{i+1}. 表示エラー: {e}")
@@ -561,6 +572,15 @@ class MosaicRemoverApp:
                                 self.write_log(f"無効な品質値: {quality}、デフォルト15を使用")
                                 self.cli_options["quality"] = "15"
                                 self.quality_var.set("15")
+                        elif line.startswith("crf="):
+                            crf = line.split("=")[1]
+                            if crf.isdigit() and 5 <= int(crf) <= 30:
+                                self.cli_options["crf_value"] = crf
+                                self.crf_var.set(crf)
+                            else:
+                                self.write_log(f"無効なCRF値: {crf}、デフォルト19を使用")
+                                self.cli_options["crf_value"] = "19"
+                                self.crf_var.set("19")
             except Exception as e:
                 self.write_log(f"設定ファイルの読み込みに失敗しました: {e}")
                 messagebox.showwarning("警告", f"設定ファイルの読み込みに失敗しました: {e}。デフォルト値で続行します。")
@@ -571,6 +591,7 @@ class MosaicRemoverApp:
                 f.write(f"model={self.model_var.get()}\n")
                 f.write(f"tvai={self.tvai_var.get()}\n")
                 f.write(f"quality={self.quality_var.get()}\n")
+                f.write(f"crf={self.crf_var.get()}\n")
         except Exception as e:
             self.write_log(f"設定ファイルの保存に失敗しました: {e}")
             messagebox.showwarning("警告", f"設定ファイルの保存に失敗しました: {e}。手動で確認してください。")
@@ -602,11 +623,9 @@ class MosaicRemoverApp:
         
         import re
         
-        # まず{}で囲まれたパスを抽出して処理
         brace_pattern = r'\{([^}]+)\}'
         braced_paths = re.findall(brace_pattern, file_paths_str)
         
-        # {}で囲まれたパスを一時的にプレースホルダーに置き換え
         temp_str = file_paths_str
         placeholder_map = {}
         for i, path in enumerate(braced_paths):
@@ -614,38 +633,30 @@ class MosaicRemoverApp:
             temp_str = temp_str.replace(f"{{{path}}}", placeholder)
             placeholder_map[placeholder] = path
         
-        # 全角スペース(\u3000)で分割
-        # 注: event.dataでは\u3000がエスケープ文字列として渡される場合と実際の全角スペースとして渡される場合がある
         ideographic_space = '\u3000'
         parts = re.split(r'[\s\u3000]+', temp_str)
         
-        # 分割されたパーツを再結合してパスを復元
         potential_paths = []
         for part in parts:
             if part.strip():
                 if part.startswith("__PLACEHOLDER_"):
-                    # プレースホルダーの場合は元のパスを使用
                     original_path = placeholder_map[part]
                     potential_paths.append(original_path)
                 else:
                     potential_paths.append(part)
         
-        # パスを検証（分割されたパーツを結合しながら検証）
         i = 0
         while i < len(potential_paths):
             current_path = potential_paths[i]
             
-            # 既に有効なパスかチェック
             if os.path.exists(current_path) and current_path.lower().endswith(valid_extensions):
                 file_paths.append(current_path)
                 self.write_log(f"Valid path found: {current_path}")
                 i += 1
                 continue
             
-            # 有効でない場合、次のパーツと結合して再試行
             found = False
             for j in range(i + 1, len(potential_paths) + 1):
-                # 全角スペースで結合
                 combined_path = ideographic_space.join(potential_paths[i:j])
                 if os.path.exists(combined_path) and combined_path.lower().endswith(valid_extensions):
                     file_paths.append(combined_path)
@@ -664,7 +675,6 @@ class MosaicRemoverApp:
         
         self.write_log(f"Final parsed file paths: {file_paths}")
         
-        # 単一ファイルの場合
         if len(file_paths) == 1:
             file_path = file_paths[0]
             self.write_log(f"単一ファイル処理: {file_path}")
@@ -677,7 +687,6 @@ class MosaicRemoverApp:
             self.write_log(f"単一ファイルD&D: {os.path.basename(file_path)} をプレビューにロード")
             return
         
-        # 複数ファイルの場合
         if not messagebox.askyesno("確認", f"{len(file_paths)}個のファイルが指定されました。キューに登録しますか?"):
             self.write_log("D&Dキャンセル: ユーザーがキュー登録を拒否しました")
             return
@@ -706,7 +715,8 @@ class MosaicRemoverApp:
                 'ffmpeg_option': self.ffmpeg_option_var.get(),
                 'save_trimmed': self.save_trimmed_video_var.get(),
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                'fps': fps
+                'fps': fps,
+                'crf_value': int(self.crf_var.get())
             }
             
             self.processing_queue.append(queue_entry)
@@ -728,7 +738,313 @@ class MosaicRemoverApp:
         else:
             self.write_log("D&Dエラー: 有効な動画ファイルがありません")
             messagebox.showerror("エラー", "有効な動画ファイルがドロップされませんでした。")
+
+    def start_batch_processing(self, control_frame):
+        if not self.processing_queue:
+            messagebox.showinfo("情報", "キューは空です。")
+            return
+        if hasattr(self, 'is_running') and self.is_running:
+            messagebox.showwarning("警告", "処理中です。完了後に実行してください。")
+            return
         
+        self.queue_add_button.config(state=tk.DISABLED)
+        self.queue_view_button.config(state=tk.DISABLED)
+        self.start_button.config(state=tk.DISABLED)
+        self.batch_button.config(state=tk.DISABLED)
+        self.root.bind('<Control-e>', lambda e: None)
+
+        self.is_batch_processing = True
+        self.is_running = True
+        self.batch_thread = threading.Thread(target=self.batch_process_main)
+        self.batch_thread.daemon = True
+        self.batch_thread.start()
+
+    def batch_process_main(self):
+        original_batch_count = len(self.processing_queue)
+        processed_items = 0
+
+        if original_batch_count == 0:
+            self.root.after(0, lambda: self.status_label.config(text="キューは空です", fg="blue"))
+            self.is_batch_processing = False
+            self.is_running = False
+            self.root.after(0, lambda: self.batch_count_label.config(text=""))
+            self.root.after(0, lambda: self.queue_add_button.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.queue_view_button.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.batch_button.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.root.bind('<Control-e>', self.add_to_queue))
+            return
+        
+        self.root.after(0, lambda: self.batch_count_label.config(
+            text=f"バッチ処理中: 1/{original_batch_count}",
+            fg="red"
+        ))
+        
+        while self.processing_queue:
+            entry = self.processing_queue[0]
+            processed_items += 1
+            current_count = processed_items
+            
+            self.root.after(0, lambda idx=current_count: self.batch_count_label.config(
+                text=f"バッチ処理中: {idx}/{original_batch_count}",
+                fg="red"
+            ))
+            
+            self.root.after(0, lambda: self.status_label.config(text=f"処理中: {os.path.basename(entry['video_path'])}"))
+            self.write_log(f"処理中: {os.path.basename(entry['video_path'])}")
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"処理中: {os.path.basename(entry['video_path'])}\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.root.update()
+            
+            self.model_var.set(entry['model'])
+            self.tvai_var.set(entry['tvai'])
+            self.quality_var.set(str(entry['quality']))
+            self.ffmpeg_option_var.set(entry['ffmpeg_option'])
+            self.save_trimmed_video_var.set(entry['save_trimmed'])
+            self.crf_var.set(str(entry.get('crf_value', 19)))
+            
+            try:
+                self.processing_main(entry['video_path'], entry['start_frame'] / entry['fps'], entry['end_frame'] / entry['fps'])
+                
+                del self.processing_queue[0]
+                self.save_queue()
+
+                self.root.after(0, lambda: self.status_label.config(text=f"完了: {os.path.basename(entry['video_path'])}"))
+                self.write_log(f"完了: {os.path.basename(entry['video_path'])}")
+                self.console_text.config(state=tk.NORMAL)
+                self.console_text.insert(tk.END, f"完了: {os.path.basename(entry['video_path'])}\n")
+                self.console_text.config(state=tk.DISABLED)
+                self.root.update()
+
+            except Exception as e:
+                self.write_log(f"処理中にエラー発生: {os.path.basename(entry['video_path'])}, エラー: {e}")
+                self.root.after(0, lambda: self.status_label.config(text=f"エラー中断: {os.path.basename(entry['video_path'])}", fg="red"))
+                self.root.after(0, lambda: messagebox.showerror("処理エラー", f"{os.path.basename(entry['video_path'])} の処理中にエラーが発生し、バッチ処理を中断しました。\n未処理の項目はキューに残っています。"))
+                break
+
+        self.root.after(0, lambda: self.status_label.config(text="バッチ処理完了"))
+        if self.show_completion_dialog_var.get():
+            self.root.after(0, lambda: messagebox.showinfo("バッチ完了", f"バッチ処理が完了しました!\n総処理数: {original_batch_count} (処理済み: {processed_items})"))
+        
+        self.is_batch_processing = False
+        self.is_running = False
+        self.root.after(0, lambda: self.batch_count_label.config(text=""))
+        self.root.after(0, lambda: self.queue_add_button.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.queue_view_button.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.batch_button.config(state=tk.NORMAL))
+        self.root.after(0, lambda: self.root.bind('<Control-e>', self.add_to_queue))
+        self.write_log("バッチ処理全体完了")
+
+    def start_processing(self):
+        if not self.validate_inputs():
+            return
+        
+        self.is_batch_processing = False
+        self.is_running = True
+        
+        self.batch_button.config(state=tk.DISABLED)
+        self.start_button.config(state=tk.DISABLED, text="処理中...")
+        
+        self.status_label.config(text="動画を切り出し中...", fg="orange")
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.delete('1.0', tk.END)
+        self.console_text.insert(tk.END, "処理を開始します...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.root.update()
+        
+        input_file = self.file_path_entry.get()
+        start_time_sec = self.start_frame / self.video_fps
+        end_time_sec = self.end_frame / self.video_fps
+        input_filename = os.path.basename(input_file)
+        self.write_log(f"LADA処理を開始しました {input_filename}")
+        
+        self.processing_thread = threading.Thread(target=self.processing_main, args=(input_file, start_time_sec, end_time_sec))
+        self.processing_thread.daemon = True
+        self.processing_thread.start()
+
+    def validate_inputs(self):
+        if not self.file_path_entry.get():
+            messagebox.showerror("エラー", "動画ファイルを選択してください。")
+            return False
+        if not os.path.exists(self.file_path_entry.get()):
+            messagebox.showerror("エラー", "指定された動画ファイルが存在しません。")
+            return False
+        if self.start_frame >= self.end_frame:
+            messagebox.showerror("エラー", "開始フレームが終了フレーム以上です。")
+            return False
+        return True
+
+    def processing_main(self, input_file, start_time_sec, end_time_sec):
+        if self.is_batch_processing:
+            self.write_log(f"処理前リソースチェック: {os.path.basename(input_file)}")
+        
+        time.sleep(1)
+
+        unique_id = uuid.uuid4().hex
+        input_ext = os.path.splitext(input_file)[1]
+        trimmed_base_name = f"trimmed_{unique_id}"
+        trimmed_file_ext = '.mp4' if self.ffmpeg_option_var.get() == "re_encode" else input_ext
+        trimmed_file_path = os.path.join(self.output_dir, f"{trimmed_base_name}{trimmed_file_ext}")
+        processed_file_path = None
+        
+        try:
+            option = self.ffmpeg_option_var.get()
+            start_time_str = self.format_time(start_time_sec)
+            end_time_str = self.format_time(end_time_sec)
+            
+            if option == "re_encode":
+                crf_value = self.crf_var.get()
+                ffmpeg_command = [
+                    "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
+                    "-c:v", "h264_nvenc", "-c:a", "aac", "-preset", "fast", "-rc", "vbr_hq", "-crf", crf_value,
+                    trimmed_file_path
+                ]
+            elif option == "copy":
+                ffmpeg_command = [
+                    "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
+                    "-c", "copy", trimmed_file_path
+                ]
+            elif option == "copy_genpts":
+                ffmpeg_command = [
+                    "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
+                    "-c", "copy", "-fflags", "+genpts", trimmed_file_path
+                ]
+            else:
+                raise ValueError("無効なFFmpegオプションです。")
+            
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"動画を切り出し中...\n実行コマンド: {' '.join(ffmpeg_command)}\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log(f"動画を切り出し中...\n実行コマンド: {' '.join(ffmpeg_command)}")
+            
+            process = subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.root.update()
+            
+            self.status_label.config(text="切り出し完了。モザイク除去を開始します...", fg="green")
+            self.save_config()
+
+            if self.ps_script_path:
+                ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
+                input_data = f"{trimmed_file_path}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
+
+                self.process = subprocess.Popen(
+                    ps_command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                
+                self.process.stdin.write(input_data)
+                self.process.stdin.flush()
+                self.process.stdin.close()
+
+                for line in iter(self.process.stdout.readline, ''):
+                    self.console_text.config(state=tk.NORMAL)
+                    self.console_text.insert(tk.END, line)
+                    self.console_text.see(tk.END)
+                    self.console_text.config(state=tk.DISABLED)
+                    if not line.strip().startswith("Processing frames:"):
+                        self.write_log(line.strip())
+                    self.root.update()
+
+                self.process.stdout.close()
+                self.process.wait()
+
+                if self.process.returncode != 0:
+                    self.status_label.config(text="PowerShellスクリプト実行失敗", fg="red")
+                    self.console_text.config(state=tk.NORMAL)
+                    self.console_text.insert(tk.END, "PowerShellスクリプトの実行に失敗しました。\n")
+                    self.console_text.config(state=tk.DISABLED)
+                    self.write_log("PowerShellスクリプトの実行に失敗しました。")
+                    messagebox.showerror("実行エラー", "PowerShellスクリプトの実行に失敗しました。詳細はコンソールログをご確認ください。")
+                else:
+                    for file_name in os.listdir(self.output_dir):
+                        if trimmed_base_name in file_name and file_name != os.path.basename(trimmed_file_path):
+                            processed_file_path = os.path.join(self.output_dir, file_name)
+                            break
+                    
+                    if not processed_file_path or not os.path.exists(processed_file_path):
+                        self.status_label.config(text="処理済み動画ファイルが見つかりません。", fg="red")
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, "エラー: LADAの出力ファイルが見つかりませんでした。\n")
+                        self.console_text.config(state=tk.DISABLED)
+                        self.write_log("エラー: LADAの出力ファイルが見つかりませんでした。")
+                        return
+                    
+                    base_name = os.path.splitext(os.path.basename(input_file))[0]
+                    start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
+                    end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
+                    timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
+                    cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
+                    
+                    saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_unmosaiced.mp4"
+                    saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
+                    saved_processed_path = self.generate_unique_filepath(saved_processed_path)
+                    saved_processed_name = os.path.basename(saved_processed_path)
+                    try:
+                        os.rename(processed_file_path, saved_processed_path)
+                        self.status_label.config(text=f"処理済み動画を保存しました: {saved_processed_name}", fg="blue")
+                        self.write_log(f"処理済み動画を保存しました: {saved_processed_name}")
+                    except Exception as e:
+                        self.status_label.config(text=f"ファイル名の変更に失敗しました: {e}", fg="red")
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, f"ファイル名の変更に失敗しました: {e}\n")
+                        self.console_text.config(state=tk.DISABLED)
+                        self.write_log(f"ファイル名の変更に失敗しました: {e}")
+                    
+                    if self.save_trimmed_video_var.get():
+                        saved_trimmed_name = f"{base_name}_{timestamp_tag}_trimmed{trimmed_file_ext}"
+                        saved_trimmed_path = os.path.join(self.output_dir, saved_trimmed_name)
+                        saved_trimmed_path = self.generate_unique_filepath(saved_trimmed_path)
+                        saved_trimmed_name = os.path.basename(saved_trimmed_path)
+                        try:
+                            os.rename(trimmed_file_path, saved_trimmed_path)
+                            self.status_label.config(text=f"切り出し動画を保存しました: {saved_trimmed_name}", fg="blue")
+                            self.write_log(f"切り出し動画を保存しました: {saved_trimmed_name}")
+                        except Exception as e:
+                            self.status_label.config(text=f"切り出し動画が見つからず、保存できませんでした: {e}", fg="red")
+                            self.console_text.config(state=tk.NORMAL)
+                            self.console_text.insert(tk.END, f"切り出し動画が見つからず、保存できませんでした: {e}\n")
+                            self.console_text.config(state=tk.DISABLED)
+                            self.write_log(f"切り出し動画が見つからず、保存できませんでした: {e}")
+                    else:
+                        if os.path.exists(trimmed_file_path):
+                            os.remove(trimmed_file_path)
+                            self.write_log(f"一時ファイル削除: {trimmed_file_path}")
+                    
+                    if not self.is_batch_processing and self.show_completion_dialog_var.get():
+                        messagebox.showinfo("完了", "動画のモザイク除去が完了しました!\n\nファイル名: " + saved_processed_name)
+                    self.write_log("動画のモザイク除去が完了しました!")
+        
+        except subprocess.CalledProcessError as e:
+            self.status_label.config(text="エラーが発生しました", fg="red")
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"コマンド実行に失敗しました。\nエラーコード: {e.returncode}\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log(f"コマンド実行に失敗しました。エラーコード: {e.returncode}")
+        except Exception as e:
+            self.status_label.config(text="予期せぬエラーが発生しました", fg="red")
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"エラー: {e}\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log(f"エラー: {e}")
+        finally:
+            if not self.is_batch_processing:
+                self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
+                self.batch_button.config(state=tk.NORMAL)
+            self.is_running = False
+            input_filename = os.path.basename(input_file)
+            self.write_log(f"LADA処理を終了しました {input_filename}")
+            if 'trimmed_file_path' in locals() and os.path.exists(trimmed_file_path):
+                if not self.save_trimmed_video_var.get():
+                    os.remove(trimmed_file_path)
+                    self.write_log(f"一時ファイル削除: {trimmed_file_path}")
+
     def load_video(self, file_path):
         with self.cap_lock:
             if self.cap:
@@ -1360,314 +1676,6 @@ class MosaicRemoverApp:
             self.end_time_label.config(text=self.format_time(end_time_sec))
         except Exception as e:
             self.write_log(f"時間ラベル更新エラー: {e}")
-
-    def start_batch_processing(self, control_frame):
-        if not self.processing_queue:
-            messagebox.showinfo("情報", "キューは空です。")
-            return
-        if hasattr(self, 'is_running') and self.is_running:
-            messagebox.showwarning("警告", "処理中です。完了後に実行してください。")
-            return
-        
-        self.queue_add_button.config(state=tk.DISABLED)
-        self.queue_view_button.config(state=tk.DISABLED)
-        self.start_button.config(state=tk.DISABLED)
-        self.batch_button.config(state=tk.DISABLED)
-        self.root.bind('<Control-e>', lambda e: None)
-
-        self.is_batch_processing = True
-        self.is_running = True
-        self.batch_thread = threading.Thread(target=self.batch_process_main)
-        self.batch_thread.daemon = True
-        self.batch_thread.start()
-
-    def batch_process_main(self):
-        original_batch_count = len(self.processing_queue)
-        processed_items = 0
-
-        if original_batch_count == 0:
-            self.root.after(0, lambda: self.status_label.config(text="キューは空です", fg="blue"))
-            self.is_batch_processing = False
-            self.is_running = False
-            self.root.after(0, lambda: self.batch_count_label.config(text=""))
-            self.root.after(0, lambda: self.queue_add_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.queue_view_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.batch_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.root.bind('<Control-e>', self.add_to_queue))
-            return
-        
-        self.root.after(0, lambda: self.batch_count_label.config(
-            text=f"バッチ処理中: 1/{original_batch_count}",
-            fg="red"
-        ))
-        
-        while self.processing_queue:
-            entry = self.processing_queue[0]
-            processed_items += 1
-            current_count = processed_items
-            
-            self.root.after(0, lambda idx=current_count: self.batch_count_label.config(
-                text=f"バッチ処理中: {idx}/{original_batch_count}",
-                fg="red"
-            ))
-            
-            self.root.after(0, lambda: self.status_label.config(text=f"処理中: {os.path.basename(entry['video_path'])}"))
-            self.write_log(f"処理中: {os.path.basename(entry['video_path'])}")
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"処理中: {os.path.basename(entry['video_path'])}\n")
-            self.console_text.config(state=tk.DISABLED)
-            self.root.update()
-            
-            self.model_var.set(entry['model'])
-            self.tvai_var.set(entry['tvai'])
-            self.quality_var.set(str(entry['quality']))
-            self.ffmpeg_option_var.set(entry['ffmpeg_option'])
-            self.save_trimmed_video_var.set(entry['save_trimmed'])
-            
-            try:
-                self.processing_main(entry['video_path'], entry['start_frame'] / entry['fps'], entry['end_frame'] / entry['fps'])
-                
-                del self.processing_queue[0]
-                self.save_queue()
-
-                self.root.after(0, lambda: self.status_label.config(text=f"完了: {os.path.basename(entry['video_path'])}"))
-                self.write_log(f"完了: {os.path.basename(entry['video_path'])}")
-                self.console_text.config(state=tk.NORMAL)
-                self.console_text.insert(tk.END, f"完了: {os.path.basename(entry['video_path'])}\n")
-                self.console_text.config(state=tk.DISABLED)
-                self.root.update()
-
-            except Exception as e:
-                self.write_log(f"処理中にエラー発生: {os.path.basename(entry['video_path'])}, エラー: {e}")
-                self.root.after(0, lambda: self.status_label.config(text=f"エラー中断: {os.path.basename(entry['video_path'])}", fg="red"))
-                self.root.after(0, lambda: messagebox.showerror("処理エラー", f"{os.path.basename(entry['video_path'])} の処理中にエラーが発生し、バッチ処理を中断しました。\n未処理の項目はキューに残っています。"))
-                break
-
-        self.root.after(0, lambda: self.status_label.config(text="バッチ処理完了"))
-        if self.show_completion_dialog_var.get():
-            self.root.after(0, lambda: messagebox.showinfo("バッチ完了", f"バッチ処理が完了しました!\n総処理数: {original_batch_count} (処理済み: {processed_items})"))
-        
-        self.is_batch_processing = False
-        self.is_running = False
-        self.root.after(0, lambda: self.batch_count_label.config(text=""))
-        self.root.after(0, lambda: self.queue_add_button.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.queue_view_button.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.start_button.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.batch_button.config(state=tk.NORMAL))
-        self.root.after(0, lambda: self.root.bind('<Control-e>', self.add_to_queue))
-        self.write_log("バッチ処理全体完了")
-
-    def start_processing(self):
-        if not self.validate_inputs():
-            return
-        
-        self.is_batch_processing = False
-        self.is_running = True
-        
-        self.batch_button.config(state=tk.DISABLED)
-        self.start_button.config(state=tk.DISABLED, text="処理中...")
-        
-        self.status_label.config(text="動画を切り出し中...", fg="orange")
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.delete('1.0', tk.END)
-        self.console_text.insert(tk.END, "処理を開始します...\n")
-        self.console_text.config(state=tk.DISABLED)
-        self.root.update()
-        
-        input_file = self.file_path_entry.get()
-        start_time_sec = self.start_frame / self.video_fps
-        end_time_sec = self.end_frame / self.video_fps
-        input_filename = os.path.basename(input_file)
-        self.write_log(f"LADA処理を開始しました {input_filename}")
-        
-        self.processing_thread = threading.Thread(target=self.processing_main, args=(input_file, start_time_sec, end_time_sec))
-        self.processing_thread.daemon = True
-        self.processing_thread.start()
-
-    def validate_inputs(self):
-        if not self.file_path_entry.get():
-            messagebox.showerror("エラー", "動画ファイルを選択してください。")
-            return False
-        if not os.path.exists(self.file_path_entry.get()):
-            messagebox.showerror("エラー", "指定された動画ファイルが存在しません。")
-            return False
-        if self.start_frame >= self.end_frame:
-            messagebox.showerror("エラー", "開始フレームが終了フレーム以上です。")
-            return False
-        return True
-
-    def processing_main(self, input_file, start_time_sec, end_time_sec):
-        if self.is_batch_processing:
-            self.write_log(f"処理前リソースチェック: {os.path.basename(input_file)}")
-        
-        time.sleep(1)
-
-        unique_id = uuid.uuid4().hex
-        input_ext = os.path.splitext(input_file)[1]
-        trimmed_base_name = f"trimmed_{unique_id}"
-        trimmed_file_ext = '.mp4' if self.ffmpeg_option_var.get() == "re_encode" else input_ext
-        trimmed_file_path = os.path.join(self.output_dir, f"{trimmed_base_name}{trimmed_file_ext}")
-        processed_file_path = None
-        
-        try:
-            option = self.ffmpeg_option_var.get()
-            start_time_str = self.format_time(start_time_sec)
-            end_time_str = self.format_time(end_time_sec)
-            
-            if option == "re_encode":
-                ffmpeg_command = [
-                    "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
-                    "-c:v", "h264_nvenc", "-c:a", "aac", "-preset", "fast", "-rc", "vbr_hq", "-cq", "19",
-                    trimmed_file_path
-                ]
-            elif option == "copy":
-                ffmpeg_command = [
-                    "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
-                    "-c", "copy", trimmed_file_path
-                ]
-            elif option == "copy_genpts":
-                ffmpeg_command = [
-                    "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
-                    "-c", "copy", "-fflags", "+genpts", trimmed_file_path
-                ]
-            else:
-                raise ValueError("無効なFFmpegオプションです。")
-            
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"動画を切り出し中...\n実行コマンド: {' '.join(ffmpeg_command)}\n")
-            self.console_text.config(state=tk.DISABLED)
-            self.write_log(f"動画を切り出し中...\n実行コマンド: {' '.join(ffmpeg_command)}")
-            
-            process = subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            self.root.update()
-            
-            self.status_label.config(text="切り出し完了。モザイク除去を開始します...", fg="green")
-            self.save_config()
-
-            if self.ps_script_path:
-                ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
-                input_data = f"{trimmed_file_path}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
-
-                self.process = subprocess.Popen(
-                    ps_command,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
-                
-                self.process.stdin.write(input_data)
-                self.process.stdin.flush()
-                self.process.stdin.close()
-
-                for line in iter(self.process.stdout.readline, ''):
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, line)
-                    self.console_text.see(tk.END)
-                    self.console_text.config(state=tk.DISABLED)
-                    if not line.strip().startswith("Processing frames:"):
-                        self.write_log(line.strip())
-                    self.root.update()
-
-                self.process.stdout.close()
-                self.process.wait()
-
-                if self.process.returncode != 0:
-                    self.status_label.config(text="PowerShellスクリプト実行失敗", fg="red")
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, "PowerShellスクリプトの実行に失敗しました。\n")
-                    self.console_text.config(state=tk.DISABLED)
-                    self.write_log("PowerShellスクリプトの実行に失敗しました。")
-                    messagebox.showerror("実行エラー", "PowerShellスクリプトの実行に失敗しました。詳細はコンソールログをご確認ください。")
-                else:
-                    for file_name in os.listdir(self.output_dir):
-                        if trimmed_base_name in file_name and file_name != os.path.basename(trimmed_file_path):
-                            processed_file_path = os.path.join(self.output_dir, file_name)
-                            break
-                    
-                    if not processed_file_path or not os.path.exists(processed_file_path):
-                        self.status_label.config(text="処理済み動画ファイルが見つかりません。", fg="red")
-                        self.console_text.config(state=tk.NORMAL)
-                        self.console_text.insert(tk.END, "エラー: LADAの出力ファイルが見つかりませんでした。\n")
-                        self.console_text.config(state=tk.DISABLED)
-                        self.write_log("エラー: LADAの出力ファイルが見つかりませんでした。")
-                        return
-                    
-                    base_name = os.path.splitext(os.path.basename(input_file))[0]
-                    start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
-                    end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
-                    timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
-                    cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
-                    
-                    saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_unmosaiced.mp4"
-                    saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
-                    saved_processed_path = self.generate_unique_filepath(saved_processed_path)
-                    saved_processed_name = os.path.basename(saved_processed_path)
-                    try:
-                        os.rename(processed_file_path, saved_processed_path)
-                        self.status_label.config(text=f"処理済み動画を保存しました: {saved_processed_name}", fg="blue")
-                        self.write_log(f"処理済み動画を保存しました: {saved_processed_name}")
-                    except Exception as e:
-                        self.status_label.config(text=f"ファイル名の変更に失敗しました: {e}", fg="red")
-                        self.console_text.config(state=tk.NORMAL)
-                        self.console_text.insert(tk.END, f"ファイル名の変更に失敗しました: {e}\n")
-                        self.console_text.config(state=tk.DISABLED)
-                        self.write_log(f"ファイル名の変更に失敗しました: {e}")
-                    
-                    if self.save_trimmed_video_var.get():
-                        saved_trimmed_name = f"{base_name}_{timestamp_tag}_trimmed{trimmed_file_ext}"
-                        saved_trimmed_path = os.path.join(self.output_dir, saved_trimmed_name)
-                        saved_trimmed_path = self.generate_unique_filepath(saved_trimmed_path)
-                        saved_trimmed_name = os.path.basename(saved_trimmed_path)
-                        try:
-                            os.rename(trimmed_file_path, saved_trimmed_path)
-                            self.status_label.config(text=f"切り出し動画を保存しました: {saved_trimmed_name}", fg="blue")
-                            self.write_log(f"切り出し動画を保存しました: {saved_trimmed_name}")
-                        except Exception as e:
-                            self.status_label.config(text=f"切り出し動画が見つからず、保存できませんでした: {e}", fg="red")
-                            self.console_text.config(state=tk.NORMAL)
-                            self.console_text.insert(tk.END, f"切り出し動画が見つからず、保存できませんでした: {e}\n")
-                            self.console_text.config(state=tk.DISABLED)
-                            self.write_log(f"切り出し動画が見つからず、保存できませんでした: {e}")
-                    else:
-                        if os.path.exists(trimmed_file_path):
-                            os.remove(trimmed_file_path)
-                            self.write_log(f"一時ファイル削除: {trimmed_file_path}")
-                    
-                    if not self.is_batch_processing and self.show_completion_dialog_var.get():
-                        messagebox.showinfo("完了", "動画のモザイク除去が完了しました!\n\nファイル名: " + saved_processed_name)
-                    self.write_log("動画のモザイク除去が完了しました!")
-        
-        except subprocess.CalledProcessError as e:
-            self.status_label.config(text="エラーが発生しました", fg="red")
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"コマンド実行に失敗しました。\nエラーコード: {e.returncode}\n")
-            self.console_text.config(state=tk.DISABLED)
-            self.write_log(f"コマンド実行に失敗しました。エラーコード: {e.returncode}")
-        except Exception as e:
-            self.status_label.config(text="予期せぬエラーが発生しました", fg="red")
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"エラー: {e}\n")
-            self.console_text.config(state=tk.DISABLED)
-            self.write_log(f"エラー: {e}")
-        finally:
-            if not self.is_batch_processing:
-                self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
-                self.batch_button.config(state=tk.NORMAL)
-            self.is_running = False
-            input_filename = os.path.basename(input_file)
-            self.write_log(f"LADA処理を終了しました {input_filename}")
-            if 'trimmed_file_path' in locals() and os.path.exists(trimmed_file_path):
-                if not self.save_trimmed_video_var.get():
-                    os.remove(trimmed_file_path)
-                    self.write_log(f"一時ファイル削除: {trimmed_file_path}")
-            #if 'processed_file_path' in locals() and processed_file_path and os.path.exists(processed_file_path):
-            #    if not os.path.exists(saved_processed_path):
-            #        os.remove(processed_file_path)
-            #        self.write_log(f"一時ファイル削除: {processed_file_path}")
 
     def on_closing(self):
         self.buffer_running = False
