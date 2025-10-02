@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (VR対応 20251002)")
+        self.root.title("動画モザイク除去 GUI (VR対応 20251002-5)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -387,10 +387,10 @@ class MosaicRemoverApp:
         self.console_text = scrolledtext.ScrolledText(lada_info_frame, height=5, state=tk.DISABLED)
         self.console_text.pack(fill=tk.BOTH, expand=True, pady=10)
     
-    
     def split_vr_video(self, input_file, unique_id):
-        """VR映像を18分割し、音声を抽出"""
-        # 音声を抽出
+        """VR映像を18分割し、音声を抽出（分割時 h264_nvenc + 高品質）"""
+        
+        # 1. 音声を抽出 (ここは変更なし)
         audio_file = os.path.join(self.output_dir, f'{unique_id}_audio.aac')
         extract_audio_command = [
             'ffmpeg', '-y', '-i', input_file,
@@ -409,25 +409,14 @@ class MosaicRemoverApp:
             self.write_log("音声抽出失敗または音声トラックなし")
             audio_file = None
         
+        # 2. 18分割のクロップ情報を定義 (ここは変更なし)
         parts_info = [
-            ('left-up-left', '0:0'),
-            ('left-up-center', 'iw/6:0'),
-            ('left-up-right', '2*iw/6:0'),
-            ('left-mid-left', '0:ih/3'),
-            ('left-mid-center', 'iw/6:ih/3'),
-            ('left-mid-right', '2*iw/6:ih/3'),
-            ('left-down-left', '0:2*ih/3'),
-            ('left-down-center', 'iw/6:2*ih/3'),
-            ('left-down-right', '2*iw/6:2*ih/3'),
-            ('right-up-left', '3*iw/6:0'),
-            ('right-up-center', '4*iw/6:0'),
-            ('right-up-right', '5*iw/6:0'),
-            ('right-mid-left', '3*iw/6:ih/3'),
-            ('right-mid-center', '4*iw/6:ih/3'),
-            ('right-mid-right', '5*iw/6:ih/3'),
-            ('right-down-left', '3*iw/6:2*ih/3'),
-            ('right-down-center', '4*iw/6:2*ih/3'),
-            ('right-down-right', '5*iw/6:2*ih/3'),
+            ('left-up-left', '0:0'), ('left-up-center', 'iw/6:0'), ('left-up-right', '2*iw/6:0'),
+            ('left-mid-left', '0:ih/3'), ('left-mid-center', 'iw/6:ih/3'), ('left-mid-right', '2*iw/6:ih/3'),
+            ('left-down-left', '0:2*ih/3'), ('left-down-center', 'iw/6:2*ih/3'), ('left-down-right', '2*iw/6:2*ih/3'),
+            ('right-up-left', '3*iw/6:0'), ('right-up-center', '4*iw/6:0'), ('right-up-right', '5*iw/6:0'),
+            ('right-mid-left', '3*iw/6:ih/3'), ('right-mid-center', '4*iw/6:ih/3'), ('right-mid-right', '5*iw/6:ih/3'),
+            ('right-down-left', '3*iw/6:2*ih/3'), ('right-down-center', '4*iw/6:2*ih/3'), ('right-down-right', '5*iw/6:2*ih/3'),
         ]
         
         filter_complex = ''
@@ -439,12 +428,27 @@ class MosaicRemoverApp:
         
         filter_complex = filter_complex.rstrip(';')
         
-        ffmpeg_command = ['ffmpeg', '-y', '-i', input_file, '-filter_complex', filter_complex] + map_args
+        # h264_nvencと高品質オプション (ここは変更なし)
+        ffmpeg_options = [
+            '-c:v', 'h264_nvenc',
+            '-preset', 'p4',
+            '-cq', '18',
+            '-rc-lookahead', '20',
+            '-g', '150',
+            '-an', 
+        ]
         
+        ffmpeg_command = ['ffmpeg', '-y', '-i', input_file, 
+                          '-filter_complex', filter_complex] + ffmpeg_options + map_args
+        
+        # 3. 分割実行
         self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"VR映像を18分割中...\n")
+        self.console_text.insert(tk.END, f"VR映像を18分割中 (h264_nvenc)...\n")
         self.console_text.config(state=tk.DISABLED)
-        self.write_log("VR映像分割開始")
+        self.write_log("VR映像分割開始 (h264_nvenc)")
+        
+        # ★追加: FFmpegコマンドをログに出力
+        self.write_log(f"FFmpegコマンド (分割): {' '.join(ffmpeg_command)}")
         
         subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         
@@ -456,12 +460,14 @@ class MosaicRemoverApp:
         return [name for name, _ in parts_info], audio_file
 
     def merge_vr_video(self, unique_id, parts, output_file, audio_file):
-        """VR処理済み映像を結合し、音声を合成"""
+        """VR処理済み映像を結合し、音声を合成（結合時 h264_nvenc + 高品質）"""
+        
+        # ... (input_args、filter_complex、video_codec_options の定義は変更なし) ...
+        
         input_args = []
         for part in parts:
             input_args.extend(['-i', os.path.join(self.output_dir, f'{unique_id}_{part}_processed.mp4')])
         
-        # 音声がある場合は音声入力を追加
         if audio_file and os.path.exists(audio_file):
             input_args.extend(['-i', audio_file])
         
@@ -479,14 +485,23 @@ class MosaicRemoverApp:
     [left_eye][right_eye]hstack=2[v]
     """
         
+        video_codec_options = [
+            '-c:v', 'h264_nvenc', 
+            '-preset', 'p4', 
+            '-cq', '18', 
+            '-rc-lookahead', '20',
+            '-g', '150',
+        ]
+
         # FFmpegコマンドの構築
         if audio_file and os.path.exists(audio_file):
             ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
                 '-filter_complex', filter_complex.strip(),
                 '-map', '[v]', 
-                '-map', f'{len(parts)}:a',
-                '-c:v', 'libx264', 
+                '-map', f'{len(parts)}:a', 
+            ] + video_codec_options + [ 
                 '-c:a', 'aac',
+                '-b:a', '192k',
                 '-shortest',
                 output_file
             ]
@@ -494,15 +509,17 @@ class MosaicRemoverApp:
             ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
                 '-filter_complex', filter_complex.strip(),
                 '-map', '[v]',
-                '-c:v', 'libx264',
+            ] + video_codec_options + [
                 output_file
             ]
         
         self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"VR映像を結合中...\n")
+        self.console_text.insert(tk.END, f"VR映像を結合中 (h264_nvenc)...\n")
         self.console_text.config(state=tk.DISABLED)
-        self.write_log("VR映像結合開始")
-        self.write_log(f"FFmpegコマンド: {' '.join(ffmpeg_command)}")
+        self.write_log("VR映像結合開始 (h264_nvenc)")
+        
+        # ★確認: FFmpegコマンドをログに出力
+        self.write_log(f"FFmpegコマンド (結合): {' '.join(ffmpeg_command)}")
         
         try:
             result = subprocess.run(
@@ -522,10 +539,13 @@ class MosaicRemoverApp:
             self.write_log(f"FFmpegエラー出力: {e.stderr}")
             raise
         
-        # 音声ファイルを削除
+        # 音声ファイルを削除 (ここは変更なし)
         if audio_file and os.path.exists(audio_file):
-            os.remove(audio_file)
-            self.write_log(f"音声ファイル削除: {audio_file}")
+            try:
+                os.remove(audio_file)
+                self.write_log(f"音声ファイル削除: {audio_file}")
+            except OSError as e:
+                self.write_log(f"音声ファイル削除失敗: {audio_file}. エラー: {e}")
 
     def abort_processing(self):
         """処理を中断し、LADAプロセスをKILLしてバッチループも中止する"""
@@ -1000,7 +1020,7 @@ class MosaicRemoverApp:
             fg="red"
         ))
         
-        while self.processing_queue and self.is_batch_processing:  # 条件追加
+        while self.processing_queue and self.is_batch_processing:
             entry = self.processing_queue[0]
             processed_items += 1
             current_count = processed_items
@@ -1026,14 +1046,26 @@ class MosaicRemoverApp:
             self.vr_processing_var.set(entry.get('vr_processing', False))
             self.vr_simple_mode_var.set(entry.get('vr_simple_mode', False))
             
+            processing_success = False  # 処理成功フラグを追加
+            
             try:
                 self.processing_main(
                     entry['video_path'], 
                     entry['start_frame'] / entry['fps'], 
                     entry['end_frame'] / entry['fps'],
-                    entry.get('vr_simple_mode', False)  # 引数追加
+                    entry.get('vr_simple_mode', False)
                 )
                 
+                processing_success = True  # 処理が正常完了
+                
+            except Exception as e:
+                self.write_log(f"処理中にエラー発生: {os.path.basename(entry['video_path'])}, エラー: {e}")
+                self.root.after(0, lambda: self.status_label.config(text=f"エラー中断: {os.path.basename(entry['video_path'])}", fg="red"))
+                self.root.after(0, lambda: messagebox.showerror("処理エラー", f"{os.path.basename(entry['video_path'])} の処理中にエラーが発生し、バッチ処理を中断しました。\n未処理の項目はキューに残っています。"))
+                break
+            
+            # 処理が正常完了した場合のみキューから削除
+            if processing_success and self.is_batch_processing:
                 del self.processing_queue[0]
                 self.save_queue()
 
@@ -1043,11 +1075,9 @@ class MosaicRemoverApp:
                 self.console_text.insert(tk.END, f"完了: {os.path.basename(entry['video_path'])}\n")
                 self.console_text.config(state=tk.DISABLED)
                 self.root.update()
-
-            except Exception as e:
-                self.write_log(f"処理中にエラー発生: {os.path.basename(entry['video_path'])}, エラー: {e}")
-                self.root.after(0, lambda: self.status_label.config(text=f"エラー中断: {os.path.basename(entry['video_path'])}", fg="red"))
-                self.root.after(0, lambda: messagebox.showerror("処理エラー", f"{os.path.basename(entry['video_path'])} の処理中にエラーが発生し、バッチ処理を中断しました。\n未処理の項目はキューに残っています。"))
+            elif not self.is_batch_processing:
+                # 中断された場合はキューから削除せず、ループを抜ける
+                self.write_log(f"中断により未完了: {os.path.basename(entry['video_path'])}")
                 break
 
         self.root.after(0, lambda: self.status_label.config(text="バッチ処理完了"))
@@ -1151,6 +1181,14 @@ class MosaicRemoverApp:
             self.write_log(f"動画を切り出し中...\n実行コマンド: {' '.join(ffmpeg_command)}")
             
             process = subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            # ↑ ここでFFmpegの完了を待つ
+
+            # メッセージはFFmpeg完了後に表示
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, "動画の切り出しが完了しました。\n")  # 追加
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log("動画の切り出しが完了しました。")  # 追加
+
             self.root.update()
             
             self.status_label.config(text="切り出し完了。モザイク除去を開始します...", fg="green")
