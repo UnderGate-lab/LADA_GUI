@@ -528,7 +528,7 @@ class MosaicRemoverApp:
             self.write_log(f"音声ファイル削除: {audio_file}")
 
     def abort_processing(self):
-        """処理を中断し、LADAプロセスをKILLして待機状態に戻す"""
+        """処理を中断し、LADAプロセスをKILLしてバッチループも中止する"""
         if not (hasattr(self, 'is_running') and self.is_running) and \
            not (hasattr(self, 'is_batch_processing') and self.is_batch_processing):
             messagebox.showinfo("情報", "現在、処理は実行されていません。")
@@ -537,20 +537,51 @@ class MosaicRemoverApp:
         if not messagebox.askyesno("確認", "現在実行中の処理を中断しますか?"):
             return
         
-        if self.process and self.process.poll() is None:
-            self.process.kill()
-            self.write_log("LADAプロセスを強制終了しました")
-        
+        # 1. バッチ処理とメイン実行フラグを即座にFalseに設定してループを停止
         self.is_batch_processing = False
         self.is_running = False
         self.buffer_running = False
         
+        # 2. LADAプロセス(PowerShell)を強制終了
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.kill()
+                self.process.wait(timeout=3)  # 最大3秒待機
+                self.write_log("LADAプロセスを強制終了しました")
+            except subprocess.TimeoutExpired:
+                self.write_log("LADAプロセス終了タイムアウト")
+            except Exception as e:
+                self.write_log(f"LADAプロセス終了エラー: {e}")
+            finally:
+                self.process = None
+        
+        # 3. FFMPEGプロセスも確実に終了させる
+        # output_dirから実行中の可能性のあるファイルに対応するFFMPEGプロセスを検索して終了
+        try:
+            import psutil
+            for proc in psutil.process_iter(['name', 'cmdline']):
+                try:
+                    if proc.info['name'] and 'ffmpeg' in proc.info['name'].lower():
+                        # コマンドラインにoutput_dirが含まれる場合のみ終了
+                        if proc.info['cmdline'] and any(self.output_dir in arg for arg in proc.info['cmdline']):
+                            proc.kill()
+                            self.write_log(f"FFMPEGプロセスを強制終了しました: PID {proc.pid}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except ImportError:
+            # psutilがない場合は警告のみ
+            self.write_log("警告: psutilが利用できないため、FFMPEGプロセスの完全な終了を保証できません")
+        except Exception as e:
+            self.write_log(f"FFMPEGプロセス検索エラー: {e}")
+        
+        # 4. UI要素を元に戻す
         self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
         self.batch_button.config(state=tk.NORMAL)
         self.queue_add_button.config(state=tk.NORMAL)
         self.queue_view_button.config(state=tk.NORMAL)
         self.root.bind('<Control-e>', self.add_to_queue)
         
+        # 5. ステータス更新
         self.status_label.config(text="処理を中断しました", fg="red")
         self.batch_count_label.config(text="")
         self.console_text.config(state=tk.NORMAL)
@@ -591,7 +622,8 @@ class MosaicRemoverApp:
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'fps': fps,
             'crf_value': int(self.crf_var.get()),
-            'vr_processing': self.vr_processing_var.get()
+            'vr_processing': self.vr_processing_var.get(),
+            'vr_simple_mode': self.vr_simple_mode_var.get()  # 追加
         }
         
         self.processing_queue.append(queue_entry)
@@ -685,8 +717,10 @@ class MosaicRemoverApp:
                 save_trimmed = '保存する' if entry['save_trimmed'] else '保存しない'
                 crf_value = entry.get('crf_value', 19)
                 vr_mode = 'VR' if entry.get('vr_processing', False) else '2D'
+                simple_mode = '簡易' if entry.get('vr_simple_mode', False) else '通常'  # 追加
                 display_text = (f"{i+1}. {filename}, Model:{model}, TVAI:{tvai}, Quality:{quality}, "
-                               f"Range:{start_time}-{end_time}, FFmpeg:{ffmpeg_option}, CRF:{crf_value}, SaveTrim:{save_trimmed}, Mode:{vr_mode}")
+                               f"Range:{start_time}-{end_time}, FFmpeg:{ffmpeg_option}, CRF:{crf_value}, "
+                               f"SaveTrim:{save_trimmed}, Mode:{vr_mode}, VRMode:{simple_mode}")  # 修正
                 self.queue_listbox.insert(tk.END, display_text)
             except Exception as e:
                 self.queue_listbox.insert(tk.END, f"{i+1}. 表示エラー: {e}")
@@ -966,7 +1000,7 @@ class MosaicRemoverApp:
             fg="red"
         ))
         
-        while self.processing_queue:
+        while self.processing_queue and self.is_batch_processing:  # 条件追加
             entry = self.processing_queue[0]
             processed_items += 1
             current_count = processed_items
@@ -993,7 +1027,12 @@ class MosaicRemoverApp:
             self.vr_simple_mode_var.set(entry.get('vr_simple_mode', False))
             
             try:
-                self.processing_main(entry['video_path'], entry['start_frame'] / entry['fps'], entry['end_frame'] / entry['fps'])
+                self.processing_main(
+                    entry['video_path'], 
+                    entry['start_frame'] / entry['fps'], 
+                    entry['end_frame'] / entry['fps'],
+                    entry.get('vr_simple_mode', False)  # 引数追加
+                )
                 
                 del self.processing_queue[0]
                 self.save_queue()
@@ -1064,7 +1103,11 @@ class MosaicRemoverApp:
             return False
         return True
 
-    def processing_main(self, input_file, start_time_sec, end_time_sec):
+    def processing_main(self, input_file, start_time_sec, end_time_sec, vr_simple_mode=None):
+        # vr_simple_modeがNoneの場合は現在のGUI設定を使用（単一処理用）
+        if vr_simple_mode is None:
+            vr_simple_mode = self.vr_simple_mode_var.get()
+        
         if self.is_batch_processing:
             self.write_log(f"処理前リソースチェック: {os.path.basename(input_file)}")
         
@@ -1123,15 +1166,15 @@ class MosaicRemoverApp:
                 self.console_text.config(state=tk.DISABLED)
                 self.write_log("VR処理モード開始")
                 
-                # 簡易処理モードの判定
-                is_simple_mode = self.vr_simple_mode_var.get()
+                # 簡易処理モードの判定（引数で渡された値を使用）
+                is_simple_mode = vr_simple_mode
                 
                 # 1. VR映像を18分割し、音声を抽出
                 parts, audio_file = self.split_vr_video(trimmed_file_path, unique_id)
                 
                 # 簡易モードの場合、処理対象を限定
                 if is_simple_mode:
-                    # 処理対象: left-mid-center, left-mid-bottom, right-mid-center, right-mid-bottom
+                    # 処理対象: left-mid-center, left-down-center, right-mid-center, right-down-center
                     parts_to_process = ['left-mid-center', 'left-down-center', 'right-mid-center', 'right-down-center']
                     self.console_text.config(state=tk.NORMAL)
                     self.console_text.insert(tk.END, f"簡易処理モード: {len(parts_to_process)}エリアのみ処理します\n")
