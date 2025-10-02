@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (20251001-3)")
+        self.root.title("動画モザイク除去 GUI (VR対応 20251002-6)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -93,7 +93,7 @@ class MosaicRemoverApp:
         window.bind('<Control-e>', self.add_to_queue)
         window.bind('<Control-q>', lambda e: self.open_queue_window())
         window.bind('<Control-r>', lambda e: self.reset_points())
-        window.bind('f', self.toggle_fullscreen)  
+        window.bind('f', self.toggle_fullscreen)
         window.bind('j', self.move_one_frame_backward)
         window.bind('k', self.toggle_play_pause)
         window.bind('l', self.move_one_frame_forward)
@@ -107,7 +107,6 @@ class MosaicRemoverApp:
             window.bind(str(i), lambda e, percentage=i*10: self.jump_to_percentage(percentage))
 
     def jump_to_video_start(self, event=None):
-        """動画の先頭(0フレーム)に移動"""
         if not self.cap or not self.cap.isOpened():
             return
         self.current_frame = 0
@@ -126,7 +125,6 @@ class MosaicRemoverApp:
                 self.write_log(f"動画先頭ジャンプエラー: {e}")
 
     def jump_to_video_end(self, event=None):
-        """動画の末尾(最終フレーム)に移動"""
         if not self.cap or not self.cap.isOpened():
             return
         self.current_frame = max(0, self.video_total_frames - 1)
@@ -145,7 +143,6 @@ class MosaicRemoverApp:
                 self.write_log(f"動画末尾ジャンプエラー: {e}")
 
     def exit_fullscreen(self, event=None):
-        """フルスクリーンを終了する(ESCキー用)"""
         if self.fullscreen_window:
             self.buffer_running = False
             try:
@@ -337,8 +334,20 @@ class MosaicRemoverApp:
         self.batch_count_label = tk.Label(ffmpeg_frame, text="", fg="blue")
         self.batch_count_label.pack(side=tk.RIGHT, padx=5)
 
+        # VR処理チェックボックス追加
+        vr_frame = tk.LabelFrame(main_frame, text="5. VR映像処理", padx=10, pady=10)
+        vr_frame.grid(row=4, column=0, sticky="ew", pady=5)
+        
+        self.vr_processing_var = tk.BooleanVar(value=False)
+        self.vr_processing_check = Checkbutton(vr_frame, text="VR処理(180度SBS形式)", variable=self.vr_processing_var)
+        self.vr_processing_check.pack(side=tk.LEFT, padx=5)
+        
+        self.vr_simple_mode_var = tk.BooleanVar(value=False)
+        self.vr_simple_mode_check = Checkbutton(vr_frame, text="簡易処理モード", variable=self.vr_simple_mode_var)
+        self.vr_simple_mode_check.pack(side=tk.LEFT, padx=5)
+
         control_frame = tk.Frame(main_frame, pady=10)
-        control_frame.grid(row=4, column=0, sticky="ew")
+        control_frame.grid(row=5, column=0, sticky="ew")
         
         self.save_trimmed_video_var = tk.BooleanVar(value=False)
         self.save_trimmed_video_check = Checkbutton(control_frame, text="切り出し動画を保存", variable=self.save_trimmed_video_var)
@@ -378,34 +387,263 @@ class MosaicRemoverApp:
         self.console_text = scrolledtext.ScrolledText(lada_info_frame, height=5, state=tk.DISABLED)
         self.console_text.pack(fill=tk.BOTH, expand=True, pady=10)
     
+    def split_vr_video(self, input_file, unique_id):
+        """VR映像を18分割し、音声を抽出(分割時 h264_nvenc + 高品質)
+           簡易モードの場合は、左2領域・右2領域を結合したファイルも作成"""
+        
+        # 1. 音声を抽出 (変更なし)
+        audio_file = os.path.join(self.output_dir, f'{unique_id}_audio.aac')
+        extract_audio_command = [
+            'ffmpeg', '-y', '-i', input_file,
+            '-vn', '-acodec', 'copy', audio_file
+        ]
+        
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"音声を抽出中...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("VR映像から音声抽出開始")
+        
+        try:
+            subprocess.run(extract_audio_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.write_log("音声抽出完了")
+        except subprocess.CalledProcessError:
+            self.write_log("音声抽出失敗または音声トラックなし")
+            audio_file = None
+        
+        # 2. 18分割のクロップ情報を定義 (変更なし)
+        parts_info = [
+            ('left-up-left', '0:0'), ('left-up-center', 'iw/6:0'), ('left-up-right', '2*iw/6:0'),
+            ('left-mid-left', '0:ih/3'), ('left-mid-center', 'iw/6:ih/3'), ('left-mid-right', '2*iw/6:ih/3'),
+            ('left-down-left', '0:2*ih/3'), ('left-down-center', 'iw/6:2*ih/3'), ('left-down-right', '2*iw/6:2*ih/3'),
+            ('right-up-left', '3*iw/6:0'), ('right-up-center', '4*iw/6:0'), ('right-up-right', '5*iw/6:0'),
+            ('right-mid-left', '3*iw/6:ih/3'), ('right-mid-center', '4*iw/6:ih/3'), ('right-mid-right', '5*iw/6:ih/3'),
+            ('right-down-left', '3*iw/6:2*ih/3'), ('right-down-center', '4*iw/6:2*ih/3'), ('right-down-right', '5*iw/6:2*ih/3'),
+        ]
+        
+        filter_complex = ''
+        map_args = []
+        
+        for name, pos in parts_info:
+            filter_complex += f'[0:v]crop=iw/6:ih/3:{pos}[{name}];'
+            map_args.extend(['-map', f'[{name}]', os.path.join(self.output_dir, f'{unique_id}_{name}.mp4')])
+        
+        filter_complex = filter_complex.rstrip(';')
+        
+        ffmpeg_options = [
+            '-c:v', 'h264_nvenc',
+            '-preset', 'p4',
+            '-cq', '18',
+            '-rc-lookahead', '20',
+            '-g', '150',
+            '-an', 
+        ]
+        
+        ffmpeg_command = ['ffmpeg', '-y', '-i', input_file, 
+                          '-filter_complex', filter_complex] + ffmpeg_options + map_args
+        
+        # 3. 分割実行
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"VR映像を18分割中 (h264_nvenc)...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("VR映像分割開始 (h264_nvenc)")
+        self.write_log(f"FFmpegコマンド (分割): {' '.join(ffmpeg_command)}")
+        
+        subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"VR映像分割完了\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("VR映像分割完了")
+        
+        # ★ 4. 簡易モードの場合、left-mid-center + left-down-center と right-mid-center + right-down-center を結合
+        is_simple_mode = self.vr_simple_mode_var.get()
+        if is_simple_mode:
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"簡易モード: 対象領域を結合中...\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log("簡易モード: 対象領域を結合開始")
+            
+            # 左側2領域を縦に結合
+            left_combined_file = os.path.join(self.output_dir, f'{unique_id}_left_combined.mp4')
+            left_combine_command = [
+                'ffmpeg', '-y',
+                '-i', os.path.join(self.output_dir, f'{unique_id}_left-mid-center.mp4'),
+                '-i', os.path.join(self.output_dir, f'{unique_id}_left-down-center.mp4'),
+                '-filter_complex', '[0:v][1:v]vstack=2[v]',
+                '-map', '[v]',
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p4',
+                '-cq', '18',
+                left_combined_file
+            ]
+            subprocess.run(left_combine_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.write_log(f"左側結合完了: {left_combined_file}")
+            
+            # 右側2領域を縦に結合
+            right_combined_file = os.path.join(self.output_dir, f'{unique_id}_right_combined.mp4')
+            right_combine_command = [
+                'ffmpeg', '-y',
+                '-i', os.path.join(self.output_dir, f'{unique_id}_right-mid-center.mp4'),
+                '-i', os.path.join(self.output_dir, f'{unique_id}_right-down-center.mp4'),
+                '-filter_complex', '[0:v][1:v]vstack=2[v]',
+                '-map', '[v]',
+                '-c:v', 'h264_nvenc',
+                '-preset', 'p4',
+                '-cq', '18',
+                right_combined_file
+            ]
+            subprocess.run(right_combine_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.write_log(f"右側結合完了: {right_combined_file}")
+            
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"対象領域の結合完了\n")
+            self.console_text.config(state=tk.DISABLED)
+        
+        return [name for name, _ in parts_info], audio_file
+    
+    def merge_vr_video(self, unique_id, parts, output_file, audio_file):
+        """VR処理済み映像を結合し、音声を合成（結合時 h264_nvenc + 高品質）"""
+        
+        # ... (input_args、filter_complex、video_codec_options の定義は変更なし) ...
+        
+        input_args = []
+        for part in parts:
+            input_args.extend(['-i', os.path.join(self.output_dir, f'{unique_id}_{part}_processed.mp4')])
+        
+        if audio_file and os.path.exists(audio_file):
+            input_args.extend(['-i', audio_file])
+        
+        filter_complex = """
+    [0:v][1:v][2:v]hstack=3[left_top];
+    [3:v][4:v][5:v]hstack=3[left_mid];
+    [6:v][7:v][8:v]hstack=3[left_bot];
+    [left_top][left_mid][left_bot]vstack=3[left_eye];
+
+    [9:v][10:v][11:v]hstack=3[right_top];
+    [12:v][13:v][14:v]hstack=3[right_mid];
+    [15:v][16:v][17:v]hstack=3[right_bot];
+    [right_top][right_mid][right_bot]vstack=3[right_eye];
+
+    [left_eye][right_eye]hstack=2[v]
+    """
+        
+        video_codec_options = [
+            '-c:v', 'h264_nvenc', 
+            '-preset', 'p4', 
+            '-cq', '18', 
+            '-rc-lookahead', '20',
+            '-g', '150',
+        ]
+
+        # FFmpegコマンドの構築
+        if audio_file and os.path.exists(audio_file):
+            ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
+                '-filter_complex', filter_complex.strip(),
+                '-map', '[v]', 
+                '-map', f'{len(parts)}:a', 
+            ] + video_codec_options + [ 
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                output_file
+            ]
+        else:
+            ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
+                '-filter_complex', filter_complex.strip(),
+                '-map', '[v]',
+            ] + video_codec_options + [
+                output_file
+            ]
+        
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"VR映像を結合中 (h264_nvenc)...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("VR映像結合開始 (h264_nvenc)")
+        
+        # ★確認: FFmpegコマンドをログに出力
+        self.write_log(f"FFmpegコマンド (結合): {' '.join(ffmpeg_command)}")
+        
+        try:
+            result = subprocess.run(
+                ffmpeg_command, 
+                check=True, 
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"VR映像結合完了\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log("VR映像結合完了")
+            
+        except subprocess.CalledProcessError as e:
+            self.write_log(f"FFmpegエラー出力: {e.stderr}")
+            raise
+        
+        # 音声ファイルを削除 (ここは変更なし)
+        if audio_file and os.path.exists(audio_file):
+            try:
+                os.remove(audio_file)
+                self.write_log(f"音声ファイル削除: {audio_file}")
+            except OSError as e:
+                self.write_log(f"音声ファイル削除失敗: {audio_file}. エラー: {e}")
+
     def abort_processing(self):
-        """処理を中断し、LADAプロセスをKILLして待機状態に戻す"""
+        """処理を中断し、LADAプロセスをKILLしてバッチループも中止する"""
         if not (hasattr(self, 'is_running') and self.is_running) and \
            not (hasattr(self, 'is_batch_processing') and self.is_batch_processing):
             messagebox.showinfo("情報", "現在、処理は実行されていません。")
             return
         
-        if not messagebox.askyesno("確認", "現在実行中の処理を中断しますか？"):
+        if not messagebox.askyesno("確認", "現在実行中の処理を中断しますか?"):
             return
         
-        # LADAプロセスをKILL
-        if self.process and self.process.poll() is None:
-            self.process.kill()
-            self.write_log("LADAプロセスを強制終了しました")
-        
-        # バッチ処理中の場合はフラグをリセット
+        # 1. バッチ処理とメイン実行フラグを即座にFalseに設定してループを停止
         self.is_batch_processing = False
         self.is_running = False
         self.buffer_running = False
         
-        # ボタンを処理待ち状態に戻す
+        # 2. LADAプロセス(PowerShell)を強制終了
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.kill()
+                self.process.wait(timeout=3)  # 最大3秒待機
+                self.write_log("LADAプロセスを強制終了しました")
+            except subprocess.TimeoutExpired:
+                self.write_log("LADAプロセス終了タイムアウト")
+            except Exception as e:
+                self.write_log(f"LADAプロセス終了エラー: {e}")
+            finally:
+                self.process = None
+        
+        # 3. FFMPEGプロセスも確実に終了させる
+        # output_dirから実行中の可能性のあるファイルに対応するFFMPEGプロセスを検索して終了
+        try:
+            import psutil
+            for proc in psutil.process_iter(['name', 'cmdline']):
+                try:
+                    if proc.info['name'] and 'ffmpeg' in proc.info['name'].lower():
+                        # コマンドラインにoutput_dirが含まれる場合のみ終了
+                        if proc.info['cmdline'] and any(self.output_dir in arg for arg in proc.info['cmdline']):
+                            proc.kill()
+                            self.write_log(f"FFMPEGプロセスを強制終了しました: PID {proc.pid}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except ImportError:
+            # psutilがない場合は警告のみ
+            self.write_log("警告: psutilが利用できないため、FFMPEGプロセスの完全な終了を保証できません")
+        except Exception as e:
+            self.write_log(f"FFMPEGプロセス検索エラー: {e}")
+        
+        # 4. UI要素を元に戻す
         self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
         self.batch_button.config(state=tk.NORMAL)
         self.queue_add_button.config(state=tk.NORMAL)
         self.queue_view_button.config(state=tk.NORMAL)
         self.root.bind('<Control-e>', self.add_to_queue)
         
-        # ステータス表示を更新
+        # 5. ステータス更新
         self.status_label.config(text="処理を中断しました", fg="red")
         self.batch_count_label.config(text="")
         self.console_text.config(state=tk.NORMAL)
@@ -445,7 +683,9 @@ class MosaicRemoverApp:
             'save_trimmed': self.save_trimmed_video_var.get(),
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'fps': fps,
-            'crf_value': int(self.crf_var.get())
+            'crf_value': int(self.crf_var.get()),
+            'vr_processing': self.vr_processing_var.get(),
+            'vr_simple_mode': self.vr_simple_mode_var.get()  # 追加
         }
         
         self.processing_queue.append(queue_entry)
@@ -538,8 +778,11 @@ class MosaicRemoverApp:
                 ffmpeg_option = ffmpeg_display_map.get(entry['ffmpeg_option'], entry['ffmpeg_option'])
                 save_trimmed = '保存する' if entry['save_trimmed'] else '保存しない'
                 crf_value = entry.get('crf_value', 19)
+                vr_mode = 'VR' if entry.get('vr_processing', False) else '2D'
+                simple_mode = '簡易' if entry.get('vr_simple_mode', False) else '通常'  # 追加
                 display_text = (f"{i+1}. {filename}, Model:{model}, TVAI:{tvai}, Quality:{quality}, "
-                               f"Range:{start_time}-{end_time}, FFmpeg:{ffmpeg_option}, CRF:{crf_value}, SaveTrim:{save_trimmed}")
+                               f"Range:{start_time}-{end_time}, FFmpeg:{ffmpeg_option}, CRF:{crf_value}, "
+                               f"SaveTrim:{save_trimmed}, Mode:{vr_mode}, VRMode:{simple_mode}")  # 修正
                 self.queue_listbox.insert(tk.END, display_text)
             except Exception as e:
                 self.queue_listbox.insert(tk.END, f"{i+1}. 表示エラー: {e}")
@@ -753,7 +996,9 @@ class MosaicRemoverApp:
                 'save_trimmed': self.save_trimmed_video_var.get(),
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'fps': fps,
-                'crf_value': int(self.crf_var.get())
+                'crf_value': int(self.crf_var.get()),
+                'vr_processing': self.vr_processing_var.get(),
+                'vr_simple_mode': self.vr_simple_mode_var.get()
             }
             
             self.processing_queue.append(queue_entry)
@@ -817,7 +1062,7 @@ class MosaicRemoverApp:
             fg="red"
         ))
         
-        while self.processing_queue:
+        while self.processing_queue and self.is_batch_processing:
             entry = self.processing_queue[0]
             processed_items += 1
             current_count = processed_items
@@ -840,10 +1085,29 @@ class MosaicRemoverApp:
             self.ffmpeg_option_var.set(entry['ffmpeg_option'])
             self.save_trimmed_video_var.set(entry['save_trimmed'])
             self.crf_var.set(str(entry.get('crf_value', 19)))
+            self.vr_processing_var.set(entry.get('vr_processing', False))
+            self.vr_simple_mode_var.set(entry.get('vr_simple_mode', False))
+            
+            processing_success = False  # 処理成功フラグを追加
             
             try:
-                self.processing_main(entry['video_path'], entry['start_frame'] / entry['fps'], entry['end_frame'] / entry['fps'])
+                self.processing_main(
+                    entry['video_path'], 
+                    entry['start_frame'] / entry['fps'], 
+                    entry['end_frame'] / entry['fps'],
+                    entry.get('vr_simple_mode', False)
+                )
                 
+                processing_success = True  # 処理が正常完了
+                
+            except Exception as e:
+                self.write_log(f"処理中にエラー発生: {os.path.basename(entry['video_path'])}, エラー: {e}")
+                self.root.after(0, lambda: self.status_label.config(text=f"エラー中断: {os.path.basename(entry['video_path'])}", fg="red"))
+                self.root.after(0, lambda: messagebox.showerror("処理エラー", f"{os.path.basename(entry['video_path'])} の処理中にエラーが発生し、バッチ処理を中断しました。\n未処理の項目はキューに残っています。"))
+                break
+            
+            # 処理が正常完了した場合のみキューから削除
+            if processing_success and self.is_batch_processing:
                 del self.processing_queue[0]
                 self.save_queue()
 
@@ -853,11 +1117,9 @@ class MosaicRemoverApp:
                 self.console_text.insert(tk.END, f"完了: {os.path.basename(entry['video_path'])}\n")
                 self.console_text.config(state=tk.DISABLED)
                 self.root.update()
-
-            except Exception as e:
-                self.write_log(f"処理中にエラー発生: {os.path.basename(entry['video_path'])}, エラー: {e}")
-                self.root.after(0, lambda: self.status_label.config(text=f"エラー中断: {os.path.basename(entry['video_path'])}", fg="red"))
-                self.root.after(0, lambda: messagebox.showerror("処理エラー", f"{os.path.basename(entry['video_path'])} の処理中にエラーが発生し、バッチ処理を中断しました。\n未処理の項目はキューに残っています。"))
+            elif not self.is_batch_processing:
+                # 中断された場合はキューから削除せず、ループを抜ける
+                self.write_log(f"中断により未完了: {os.path.basename(entry['video_path'])}")
                 break
 
         self.root.after(0, lambda: self.status_label.config(text="バッチ処理完了"))
@@ -913,7 +1175,11 @@ class MosaicRemoverApp:
             return False
         return True
 
-    def processing_main(self, input_file, start_time_sec, end_time_sec):
+    def processing_main(self, input_file, start_time_sec, end_time_sec, vr_simple_mode=None):
+        # vr_simple_modeがNoneの場合は現在のGUI設定を使用(単一処理用)
+        if vr_simple_mode is None:
+            vr_simple_mode = self.vr_simple_mode_var.get()
+        
         if self.is_batch_processing:
             self.write_log(f"処理前リソースチェック: {os.path.basename(input_file)}")
         
@@ -957,106 +1223,335 @@ class MosaicRemoverApp:
             self.write_log(f"動画を切り出し中...\n実行コマンド: {' '.join(ffmpeg_command)}")
             
             process = subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, "動画の切り出しが完了しました。\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log("動画の切り出しが完了しました。")
+
             self.root.update()
             
             self.status_label.config(text="切り出し完了。モザイク除去を開始します...", fg="green")
             self.save_config()
 
-            if self.ps_script_path:
-                ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
-                input_data = f"{trimmed_file_path}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
-
-                self.process = subprocess.Popen(
-                    ps_command,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
+            # VR処理の判定
+            is_vr_mode = self.vr_processing_var.get()
+            
+            if is_vr_mode:
+                # VR処理モード
+                self.console_text.config(state=tk.NORMAL)
+                self.console_text.insert(tk.END, "VR処理モードで実行します\n")
+                self.console_text.config(state=tk.DISABLED)
+                self.write_log("VR処理モード開始")
                 
-                self.process.stdin.write(input_data)
-                self.process.stdin.flush()
-                self.process.stdin.close()
-
-                for line in iter(self.process.stdout.readline, ''):
+                is_simple_mode = vr_simple_mode
+                
+                # 1. VR映像を18分割し、音声を抽出(簡易モード時は結合ファイルも作成)
+                parts, audio_file = self.split_vr_video(trimmed_file_path, unique_id)
+                
+                # 2. 簡易モードの場合、結合ファイルを処理
+                if is_simple_mode:
+                    # 処理対象: left_combined, right_combined の2つのみ
+                    combined_parts = ['left_combined', 'right_combined']
+                    
                     self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, line)
-                    self.console_text.see(tk.END)
+                    self.console_text.insert(tk.END, f"簡易処理モード: {len(combined_parts)}ファイルを処理します\n")
                     self.console_text.config(state=tk.DISABLED)
-                    if not line.strip().startswith("Processing frames:"):
-                        self.write_log(line.strip())
-                    self.root.update()
+                    self.write_log(f"簡易処理モード: {len(combined_parts)}ファイルを処理")
+                    
+                    for i, part_name in enumerate(combined_parts):
+                        part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
+                        
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, f"VR処理中({i+1}/{len(combined_parts)}): {part_name}\n")
+                        self.console_text.config(state=tk.DISABLED)
+                        self.status_label.config(text=f"VR処理中({i+1}/{len(combined_parts)})")
+                        self.write_log(f"VR結合ファイル処理中: {part_name} ({i+1}/{len(combined_parts)})")
+                        
+                        if self.ps_script_path:
+                            ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
+                            input_data = f"{part_file}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
 
-                self.process.stdout.close()
-                self.process.wait()
+                            self.process = subprocess.Popen(
+                                ps_command,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                bufsize=1,
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                            
+                            self.process.stdin.write(input_data)
+                            self.process.stdin.flush()
+                            self.process.stdin.close()
 
-                if self.process.returncode != 0:
-                    self.status_label.config(text="PowerShellスクリプト実行失敗", fg="red")
+                            for line in iter(self.process.stdout.readline, ''):
+                                self.console_text.config(state=tk.NORMAL)
+                                self.console_text.insert(tk.END, line)
+                                self.console_text.see(tk.END)
+                                self.console_text.config(state=tk.DISABLED)
+                                if not line.strip().startswith("Processing frames:"):
+                                    self.write_log(line.strip())
+                                self.root.update()
+
+                            self.process.stdout.close()
+                            self.process.wait()
+
+                            if self.process.returncode != 0:
+                                raise Exception(f"結合ファイル {part_name} の処理に失敗しました")
+                            
+                            # LADA処理済みファイルを検索してリネーム
+                            processed_found = False
+                            for file_name in os.listdir(self.output_dir):
+                                if (file_name.startswith(f'{unique_id}_{part_name}_lada_') and 
+                                    file_name.endswith('.mp4')):
+                                    lada_file_path = os.path.join(self.output_dir, file_name)
+                                    new_processed_name = f'{unique_id}_{part_name}_processed.mp4'
+                                    new_processed_path = os.path.join(self.output_dir, new_processed_name)
+                                    os.rename(lada_file_path, new_processed_path)
+                                    processed_found = True
+                                    self.write_log(f"LADA処理済みファイルをリネーム: {file_name} -> {new_processed_name}")
+                                    break
+                            
+                            if not processed_found:
+                                raise Exception(f"結合ファイル {part_name} のLADA処理済みファイルが見つかりませんでした")
+                            
+                            # 元の結合ファイルを削除
+                            if os.path.exists(part_file):
+                                os.remove(part_file)
+                                self.write_log(f"元の結合ファイル削除: {part_name}.mp4")
+                    
+                    # 3. 処理済み結合ファイルを分割して元のパーツに戻す
                     self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, "PowerShellスクリプトの実行に失敗しました。\n")
+                    self.console_text.insert(tk.END, "処理済みファイルを分割中...\n")
                     self.console_text.config(state=tk.DISABLED)
-                    self.write_log("PowerShellスクリプトの実行に失敗しました。")
-                    messagebox.showerror("実行エラー", "PowerShellスクリプトの実行に失敗しました。詳細はコンソールログをご確認ください。")
+                    self.write_log("処理済み結合ファイルを分割開始")
+                    
+                    # 左側処理済みファイルを2分割
+                    left_processed = os.path.join(self.output_dir, f'{unique_id}_left_combined_processed.mp4')
+                    left_split_command = [
+                        'ffmpeg', '-y', '-i', left_processed,
+                        '-filter_complex', '[0:v]crop=iw:ih/2:0:0[mid];[0:v]crop=iw:ih/2:0:ih/2[down]',
+                        '-map', '[mid]', os.path.join(self.output_dir, f'{unique_id}_left-mid-center_processed.mp4'),
+                        '-map', '[down]', os.path.join(self.output_dir, f'{unique_id}_left-down-center_processed.mp4'),
+                        '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18'
+                    ]
+                    subprocess.run(left_split_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    os.remove(left_processed)
+                    self.write_log("左側処理済みファイルを分割完了")
+                    
+                    # 右側処理済みファイルを2分割
+                    right_processed = os.path.join(self.output_dir, f'{unique_id}_right_combined_processed.mp4')
+                    right_split_command = [
+                        'ffmpeg', '-y', '-i', right_processed,
+                        '-filter_complex', '[0:v]crop=iw:ih/2:0:0[mid];[0:v]crop=iw:ih/2:0:ih/2[down]',
+                        '-map', '[mid]', os.path.join(self.output_dir, f'{unique_id}_right-mid-center_processed.mp4'),
+                        '-map', '[down]', os.path.join(self.output_dir, f'{unique_id}_right-down-center_processed.mp4'),
+                        '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18'
+                    ]
+                    subprocess.run(right_split_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    os.remove(right_processed)
+                    self.write_log("右側処理済みファイルを分割完了")
+                    
+                    # 未処理のパーツは元ファイルを_processedとしてリネーム
+                    parts_to_process = ['left-mid-center', 'left-down-center', 'right-mid-center', 'right-down-center']
+                    for part_name in parts:
+                        if part_name not in parts_to_process:
+                            part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
+                            processed_name = f'{unique_id}_{part_name}_processed.mp4'
+                            if os.path.exists(part_file):
+                                os.rename(part_file, os.path.join(self.output_dir, processed_name))
+                                self.write_log(f"未処理ファイルをリネーム: {part_name}")
+                
                 else:
-                    for file_name in os.listdir(self.output_dir):
-                        if trimmed_base_name in file_name and file_name != os.path.basename(trimmed_file_path):
-                            processed_file_path = os.path.join(self.output_dir, file_name)
-                            break
-                    
-                    if not processed_file_path or not os.path.exists(processed_file_path):
-                        self.status_label.config(text="処理済み動画ファイルが見つかりません。", fg="red")
+                    # 通常VRモード(18分割すべて処理)
+                    for i, part_name in enumerate(parts):
+                        part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
+                        
                         self.console_text.config(state=tk.NORMAL)
-                        self.console_text.insert(tk.END, "エラー: LADAの出力ファイルが見つかりませんでした。\n")
+                        self.console_text.insert(tk.END, f"VR処理中({i+1}/{len(parts)}): {part_name}\n")
                         self.console_text.config(state=tk.DISABLED)
-                        self.write_log("エラー: LADAの出力ファイルが見つかりませんでした。")
-                        return
+                        self.status_label.config(text=f"VR処理中({i+1}/{len(parts)})")
+                        self.write_log(f"VRパート処理中: {part_name} ({i+1}/{len(parts)})")
+                        
+                        if self.ps_script_path:
+                            ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
+                            input_data = f"{part_file}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
+
+                            self.process = subprocess.Popen(
+                                ps_command,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                                bufsize=1,
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                            
+                            self.process.stdin.write(input_data)
+                            self.process.stdin.flush()
+                            self.process.stdin.close()
+
+                            for line in iter(self.process.stdout.readline, ''):
+                                self.console_text.config(state=tk.NORMAL)
+                                self.console_text.insert(tk.END, line)
+                                self.console_text.see(tk.END)
+                                self.console_text.config(state=tk.DISABLED)
+                                if not line.strip().startswith("Processing frames:"):
+                                    self.write_log(line.strip())
+                                self.root.update()
+
+                            self.process.stdout.close()
+                            self.process.wait()
+
+                            if self.process.returncode != 0:
+                                raise Exception(f"パート {part_name} の処理に失敗しました")
+                            
+                            processed_found = False
+                            for file_name in os.listdir(self.output_dir):
+                                if (file_name.startswith(f'{unique_id}_{part_name}_lada_') and 
+                                    file_name.endswith('.mp4')):
+                                    lada_file_path = os.path.join(self.output_dir, file_name)
+                                    new_processed_name = f'{unique_id}_{part_name}_processed.mp4'
+                                    new_processed_path = os.path.join(self.output_dir, new_processed_name)
+                                    os.rename(lada_file_path, new_processed_path)
+                                    processed_found = True
+                                    self.write_log(f"LADA処理済みファイルをリネーム: {file_name} -> {new_processed_name}")
+                                    break
+                            
+                            if not processed_found:
+                                raise Exception(f"パート {part_name} のLADA処理済みファイルが見つかりませんでした")
+                            
+                            if os.path.exists(part_file):
+                                os.remove(part_file)
+                                self.write_log(f"元の分割ファイル削除: {part_name}.mp4")
+                
+                # 4. 処理済みパーツを結合し、音声を合成
+                base_name = os.path.splitext(os.path.basename(input_file))[0]
+                start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
+                end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
+                timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
+                cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
+                
+                saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_VR_unmosaiced.mp4"
+                saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
+                saved_processed_path = self.generate_unique_filepath(saved_processed_path)
+                
+                self.merge_vr_video(unique_id, parts, saved_processed_path, audio_file)
+                
+                # 処理済みパートファイルを削除
+                for part_name in parts:
+                    processed_part = os.path.join(self.output_dir, f'{unique_id}_{part_name}_processed.mp4')
+                    if os.path.exists(processed_part):
+                        os.remove(processed_part)
+                
+                self.status_label.config(text=f"VR処理完了: {os.path.basename(saved_processed_path)}", fg="blue")
+                self.write_log(f"VR処理完了: {os.path.basename(saved_processed_path)}")
+                
+            else:
+                # 通常の2D処理モード
+                if self.ps_script_path:
+                    ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
+                    input_data = f"{trimmed_file_path}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
+
+                    self.process = subprocess.Popen(
+                        ps_command,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
                     
-                    base_name = os.path.splitext(os.path.basename(input_file))[0]
-                    start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
-                    end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
-                    timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
-                    cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
-                    
-                    saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_unmosaiced.mp4"
-                    saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
-                    saved_processed_path = self.generate_unique_filepath(saved_processed_path)
-                    saved_processed_name = os.path.basename(saved_processed_path)
-                    try:
-                        os.rename(processed_file_path, saved_processed_path)
-                        self.status_label.config(text=f"処理済み動画を保存しました: {saved_processed_name}", fg="blue")
-                        self.write_log(f"処理済み動画を保存しました: {saved_processed_name}")
-                    except Exception as e:
-                        self.status_label.config(text=f"ファイル名の変更に失敗しました: {e}", fg="red")
+                    self.process.stdin.write(input_data)
+                    self.process.stdin.flush()
+                    self.process.stdin.close()
+
+                    for line in iter(self.process.stdout.readline, ''):
                         self.console_text.config(state=tk.NORMAL)
-                        self.console_text.insert(tk.END, f"ファイル名の変更に失敗しました: {e}\n")
+                        self.console_text.insert(tk.END, line)
+                        self.console_text.see(tk.END)
                         self.console_text.config(state=tk.DISABLED)
-                        self.write_log(f"ファイル名の変更に失敗しました: {e}")
-                    
-                    if self.save_trimmed_video_var.get():
-                        saved_trimmed_name = f"{base_name}_{timestamp_tag}_trimmed{trimmed_file_ext}"
-                        saved_trimmed_path = os.path.join(self.output_dir, saved_trimmed_name)
-                        saved_trimmed_path = self.generate_unique_filepath(saved_trimmed_path)
-                        saved_trimmed_name = os.path.basename(saved_trimmed_path)
-                        try:
-                            os.rename(trimmed_file_path, saved_trimmed_path)
-                            self.status_label.config(text=f"切り出し動画を保存しました: {saved_trimmed_name}", fg="blue")
-                            self.write_log(f"切り出し動画を保存しました: {saved_trimmed_name}")
-                        except Exception as e:
-                            self.status_label.config(text=f"切り出し動画が見つからず、保存できませんでした: {e}", fg="red")
-                            self.console_text.config(state=tk.NORMAL)
-                            self.console_text.insert(tk.END, f"切り出し動画が見つからず、保存できませんでした: {e}\n")
-                            self.console_text.config(state=tk.DISABLED)
-                            self.write_log(f"切り出し動画が見つからず、保存できませんでした: {e}")
+                        if not line.strip().startswith("Processing frames:"):
+                            self.write_log(line.strip())
+                        self.root.update()
+
+                    self.process.stdout.close()
+                    self.process.wait()
+
+                    if self.process.returncode != 0:
+                        self.status_label.config(text="PowerShellスクリプト実行失敗", fg="red")
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, "PowerShellスクリプトの実行に失敗しました。\n")
+                        self.console_text.config(state=tk.DISABLED)
+                        self.write_log("PowerShellスクリプトの実行に失敗しました。")
+                        messagebox.showerror("実行エラー", "PowerShellスクリプトの実行に失敗しました。詳細はコンソールログをご確認ください。")
                     else:
-                        if os.path.exists(trimmed_file_path):
-                            os.remove(trimmed_file_path)
-                            self.write_log(f"一時ファイル削除: {trimmed_file_path}")
-                    
-                    if not self.is_batch_processing and self.show_completion_dialog_var.get():
-                        messagebox.showinfo("完了", "動画のモザイク除去が完了しました!\n\nファイル名: " + saved_processed_name)
-                    self.write_log("動画のモザイク除去が完了しました!")
+                        for file_name in os.listdir(self.output_dir):
+                            if trimmed_base_name in file_name and file_name != os.path.basename(trimmed_file_path):
+                                processed_file_path = os.path.join(self.output_dir, file_name)
+                                break
+                        
+                        if not processed_file_path or not os.path.exists(processed_file_path):
+                            self.status_label.config(text="処理済み動画ファイルが見つかりません。", fg="red")
+                            self.console_text.config(state=tk.NORMAL)
+                            self.console_text.insert(tk.END, "エラー: LADAの出力ファイルが見つかりませんでした。\n")
+                            self.console_text.config(state=tk.DISABLED)
+                            self.write_log("エラー: LADAの出力ファイルが見つかりませんでした。")
+                            return
+                        
+                        base_name = os.path.splitext(os.path.basename(input_file))[0]
+                        start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
+                        end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
+                        timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
+                        cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
+                        
+                        saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_unmosaiced.mp4"
+                        saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
+                        saved_processed_path = self.generate_unique_filepath(saved_processed_path)
+                        saved_processed_name = os.path.basename(saved_processed_path)
+                        try:
+                            os.rename(processed_file_path, saved_processed_path)
+                            self.status_label.config(text=f"処理済み動画を保存しました: {saved_processed_name}", fg="blue")
+                            self.write_log(f"処理済み動画を保存しました: {saved_processed_name}")
+                        except Exception as e:
+                            self.status_label.config(text=f"ファイル名の変更に失敗しました: {e}", fg="red")
+                            self.console_text.config(state=tk.NORMAL)
+                            self.console_text.insert(tk.END, f"ファイル名の変更に失敗しました: {e}\n")
+                            self.console_text.config(state=tk.DISABLED)
+                            self.write_log(f"ファイル名の変更に失敗しました: {e}")
+            
+            # 切り出し動画の保存処理
+            if self.save_trimmed_video_var.get():
+                base_name = os.path.splitext(os.path.basename(input_file))[0]
+                start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
+                end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
+                timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
+                saved_trimmed_name = f"{base_name}_{timestamp_tag}_trimmed{trimmed_file_ext}"
+                saved_trimmed_path = os.path.join(self.output_dir, saved_trimmed_name)
+                saved_trimmed_path = self.generate_unique_filepath(saved_trimmed_path)
+                saved_trimmed_name = os.path.basename(saved_trimmed_path)
+                try:
+                    os.rename(trimmed_file_path, saved_trimmed_path)
+                    self.status_label.config(text=f"切り出し動画を保存しました: {saved_trimmed_name}", fg="blue")
+                    self.write_log(f"切り出し動画を保存しました: {saved_trimmed_name}")
+                except Exception as e:
+                    self.status_label.config(text=f"切り出し動画が見つからず、保存できませんでした: {e}", fg="red")
+                    self.console_text.config(state=tk.NORMAL)
+                    self.console_text.insert(tk.END, f"切り出し動画が見つからず、保存できませんでした: {e}\n")
+                    self.console_text.config(state=tk.DISABLED)
+                    self.write_log(f"切り出し動画が見つからず、保存できませんでした: {e}")
+            else:
+                if os.path.exists(trimmed_file_path):
+                    os.remove(trimmed_file_path)
+                    self.write_log(f"一時ファイル削除: {trimmed_file_path}")
+            
+            if not self.is_batch_processing and self.show_completion_dialog_var.get():
+                mode_text = "VR" if is_vr_mode else "2D"
+                messagebox.showinfo("完了", f"動画のモザイク除去が完了しました! (モード: {mode_text})\n\nファイル名: " + os.path.basename(saved_processed_path))
+            self.write_log("動画のモザイク除去が完了しました!")
         
         except subprocess.CalledProcessError as e:
             self.status_label.config(text="エラーが発生しました", fg="red")
