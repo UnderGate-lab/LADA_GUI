@@ -341,6 +341,10 @@ class MosaicRemoverApp:
         self.vr_processing_var = tk.BooleanVar(value=False)
         self.vr_processing_check = Checkbutton(vr_frame, text="VR処理(180度SBS形式)", variable=self.vr_processing_var)
         self.vr_processing_check.pack(side=tk.LEFT, padx=5)
+        
+        self.vr_simple_mode_var = tk.BooleanVar(value=False)
+        self.vr_simple_mode_check = Checkbutton(vr_frame, text="簡易処理モード", variable=self.vr_simple_mode_var)
+        self.vr_simple_mode_check.pack(side=tk.LEFT, padx=5)
 
         control_frame = tk.Frame(main_frame, pady=10)
         control_frame.grid(row=5, column=0, sticky="ew")
@@ -383,11 +387,28 @@ class MosaicRemoverApp:
         self.console_text = scrolledtext.ScrolledText(lada_info_frame, height=5, state=tk.DISABLED)
         self.console_text.pack(fill=tk.BOTH, expand=True, pady=10)
     
-    # [以下、元のメソッド群が続きます - 長さ制限のため省略部分はコメントで示します]
-    # abort_processing, add_to_queue, open_queue_window等のメソッドは元のまま
     
     def split_vr_video(self, input_file, unique_id):
-        """VR映像を18分割する"""
+        """VR映像を18分割し、音声を抽出"""
+        # 音声を抽出
+        audio_file = os.path.join(self.output_dir, f'{unique_id}_audio.aac')
+        extract_audio_command = [
+            'ffmpeg', '-y', '-i', input_file,
+            '-vn', '-acodec', 'copy', audio_file
+        ]
+        
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"音声を抽出中...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("VR映像から音声抽出開始")
+        
+        try:
+            subprocess.run(extract_audio_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.write_log("音声抽出完了")
+        except subprocess.CalledProcessError:
+            self.write_log("音声抽出失敗または音声トラックなし")
+            audio_file = None
+        
         parts_info = [
             ('left-up-left', '0:0'),
             ('left-up-center', 'iw/6:0'),
@@ -432,41 +453,79 @@ class MosaicRemoverApp:
         self.console_text.config(state=tk.DISABLED)
         self.write_log("VR映像分割完了")
         
-        return [name for name, _ in parts_info]
+        return [name for name, _ in parts_info], audio_file
 
-    def merge_vr_video(self, unique_id, parts, output_file):
-        """VR処理済み映像を結合する"""
+    def merge_vr_video(self, unique_id, parts, output_file, audio_file):
+        """VR処理済み映像を結合し、音声を合成"""
         input_args = []
         for part in parts:
             input_args.extend(['-i', os.path.join(self.output_dir, f'{unique_id}_{part}_processed.mp4')])
         
-        filter_complex = """
-[0:v][1:v][2:v]hstack=3[left_top];
-[3:v][4:v][5:v]hstack=3[left_mid];
-[6:v][7:v][8:v]hstack=3[left_bot];
-[left_top][left_mid][left_bot]vstack=3[left_eye];
-
-[9:v][10:v][11:v]hstack=3[right_top];
-[12:v][13:v][14:v]hstack=3[right_mid];
-[15:v][16:v][17:v]hstack=3[right_bot];
-[right_top][right_mid][right_bot]vstack=3[right_eye];
-
-[left_eye][right_eye]hstack=2
-"""
+        # 音声がある場合は音声入力を追加
+        if audio_file and os.path.exists(audio_file):
+            input_args.extend(['-i', audio_file])
         
-        ffmpeg_command = ['ffmpeg', '-y'] + input_args + ['-filter_complex', filter_complex.strip(), output_file]
+        filter_complex = """
+    [0:v][1:v][2:v]hstack=3[left_top];
+    [3:v][4:v][5:v]hstack=3[left_mid];
+    [6:v][7:v][8:v]hstack=3[left_bot];
+    [left_top][left_mid][left_bot]vstack=3[left_eye];
+
+    [9:v][10:v][11:v]hstack=3[right_top];
+    [12:v][13:v][14:v]hstack=3[right_mid];
+    [15:v][16:v][17:v]hstack=3[right_bot];
+    [right_top][right_mid][right_bot]vstack=3[right_eye];
+
+    [left_eye][right_eye]hstack=2[v]
+    """
+        
+        # FFmpegコマンドの構築
+        if audio_file and os.path.exists(audio_file):
+            ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
+                '-filter_complex', filter_complex.strip(),
+                '-map', '[v]', 
+                '-map', f'{len(parts)}:a',
+                '-c:v', 'libx264', 
+                '-c:a', 'aac',
+                '-shortest',
+                output_file
+            ]
+        else:
+            ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
+                '-filter_complex', filter_complex.strip(),
+                '-map', '[v]',
+                '-c:v', 'libx264',
+                output_file
+            ]
         
         self.console_text.config(state=tk.NORMAL)
         self.console_text.insert(tk.END, f"VR映像を結合中...\n")
         self.console_text.config(state=tk.DISABLED)
         self.write_log("VR映像結合開始")
+        self.write_log(f"FFmpegコマンド: {' '.join(ffmpeg_command)}")
         
-        subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            result = subprocess.run(
+                ffmpeg_command, 
+                check=True, 
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"VR映像結合完了\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log("VR映像結合完了")
+            
+        except subprocess.CalledProcessError as e:
+            self.write_log(f"FFmpegエラー出力: {e.stderr}")
+            raise
         
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"VR映像結合完了\n")
-        self.console_text.config(state=tk.DISABLED)
-        self.write_log("VR映像結合完了")
+        # 音声ファイルを削除
+        if audio_file and os.path.exists(audio_file):
+            os.remove(audio_file)
+            self.write_log(f"音声ファイル削除: {audio_file}")
 
     def abort_processing(self):
         """処理を中断し、LADAプロセスをKILLして待機状態に戻す"""
@@ -842,7 +901,8 @@ class MosaicRemoverApp:
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'fps': fps,
                 'crf_value': int(self.crf_var.get()),
-                'vr_processing': self.vr_processing_var.get()
+                'vr_processing': self.vr_processing_var.get(),
+                'vr_simple_mode': self.vr_simple_mode_var.get()
             }
             
             self.processing_queue.append(queue_entry)
@@ -930,6 +990,7 @@ class MosaicRemoverApp:
             self.save_trimmed_video_var.set(entry['save_trimmed'])
             self.crf_var.set(str(entry.get('crf_value', 19)))
             self.vr_processing_var.set(entry.get('vr_processing', False))
+            self.vr_simple_mode_var.set(entry.get('vr_simple_mode', False))
             
             try:
                 self.processing_main(entry['video_path'], entry['start_frame'] / entry['fps'], entry['end_frame'] / entry['fps'])
@@ -1062,17 +1123,46 @@ class MosaicRemoverApp:
                 self.console_text.config(state=tk.DISABLED)
                 self.write_log("VR処理モード開始")
                 
-                # 1. VR映像を18分割
-                parts = self.split_vr_video(trimmed_file_path, unique_id)
+                # 簡易処理モードの判定
+                is_simple_mode = self.vr_simple_mode_var.get()
+                
+                # 1. VR映像を18分割し、音声を抽出
+                parts, audio_file = self.split_vr_video(trimmed_file_path, unique_id)
+                
+                # 簡易モードの場合、処理対象を限定
+                if is_simple_mode:
+                    # 処理対象: left-mid-center, left-mid-bottom, right-mid-center, right-mid-bottom
+                    parts_to_process = ['left-mid-center', 'left-down-center', 'right-mid-center', 'right-down-center']
+                    self.console_text.config(state=tk.NORMAL)
+                    self.console_text.insert(tk.END, f"簡易処理モード: {len(parts_to_process)}エリアのみ処理します\n")
+                    self.console_text.config(state=tk.DISABLED)
+                    self.write_log(f"簡易処理モード: {len(parts_to_process)}エリアのみ処理")
+                else:
+                    parts_to_process = parts
                 
                 # 2. 各パートをLADA処理
                 for i, part_name in enumerate(parts):
                     part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
                     
+                    # 簡易モードで処理対象外の場合はスキップしてリネーム
+                    if is_simple_mode and part_name not in parts_to_process:
+                        # 処理せずそのまま_processedとしてリネーム
+                        processed_name = f'{unique_id}_{part_name}_processed.mp4'
+                        os.rename(part_file, os.path.join(self.output_dir, processed_name))
+                        self.write_log(f"未処理ファイルをリネーム: {part_name}")
+                        continue
+                    
+                    # 以降はLADA処理対象のみ
+                    
+                    # VR処理中の表示
+                    current_idx = parts_to_process.index(part_name) + 1 if is_simple_mode else i + 1
+                    total_count = len(parts_to_process) if is_simple_mode else len(parts)
+                    
                     self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, f"パート {i+1}/{len(parts)} を処理中: {part_name}\n")
+                    self.console_text.insert(tk.END, f"VR処理中({current_idx}/{total_count}): {part_name}\n")
                     self.console_text.config(state=tk.DISABLED)
-                    self.write_log(f"VRパート処理中: {part_name} ({i+1}/{len(parts)})")
+                    self.status_label.config(text=f"VR処理中({current_idx}/{total_count})")
+                    self.write_log(f"VRパート処理中: {part_name} ({current_idx}/{total_count})")
                     
                     if self.ps_script_path:
                         ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
@@ -1107,19 +1197,31 @@ class MosaicRemoverApp:
                         if self.process.returncode != 0:
                             raise Exception(f"パート {part_name} の処理に失敗しました")
                         
-                        # 処理済みファイルの名前変更
+                        # LADA処理済みファイルを検索してリネーム
+                        processed_found = False
+                        lada_file_path = None
                         for file_name in os.listdir(self.output_dir):
-                            if f'{unique_id}_{part_name}' in file_name and file_name != f'{unique_id}_{part_name}.mp4':
-                                processed_part_path = os.path.join(self.output_dir, file_name)
+                            # LADAが出力するファイル名パターン: {unique_id}_{part_name}_lada_*.mp4
+                            # ただし元ファイル名は除外
+                            if (file_name.startswith(f'{unique_id}_{part_name}_lada_') and 
+                                file_name.endswith('.mp4')):
+                                lada_file_path = os.path.join(self.output_dir, file_name)
                                 new_processed_name = f'{unique_id}_{part_name}_processed.mp4'
-                                os.rename(processed_part_path, os.path.join(self.output_dir, new_processed_name))
+                                new_processed_path = os.path.join(self.output_dir, new_processed_name)
+                                os.rename(lada_file_path, new_processed_path)
+                                processed_found = True
+                                self.write_log(f"LADA処理済みファイルをリネーム: {file_name} -> {new_processed_name}")
                                 break
                         
-                        # 元の分割ファイルを削除
+                        if not processed_found:
+                            raise Exception(f"パート {part_name} のLADA処理済みファイルが見つかりませんでした")
+                        
+                        # 元の分割ファイルを削除（LADA処理が成功した後のみ）
                         if os.path.exists(part_file):
                             os.remove(part_file)
-                
-                # 3. 処理済みパートを結合
+                            self.write_log(f"元の分割ファイル削除: {part_name}.mp4")
+                            
+                # 3. 処理済みパートを結合し、音声を合成
                 base_name = os.path.splitext(os.path.basename(input_file))[0]
                 start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
                 end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
@@ -1130,7 +1232,7 @@ class MosaicRemoverApp:
                 saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
                 saved_processed_path = self.generate_unique_filepath(saved_processed_path)
                 
-                self.merge_vr_video(unique_id, parts, saved_processed_path)
+                self.merge_vr_video(unique_id, parts, saved_processed_path, audio_file)
                 
                 # 処理済みパートファイルを削除
                 for part_name in parts:
