@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (VR対応 20251003-1)")
+        self.root.title("動画モザイク除去 GUI (VR対応 20251002-6)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -339,11 +339,11 @@ class MosaicRemoverApp:
         vr_frame.grid(row=4, column=0, sticky="ew", pady=5)
         
         self.vr_processing_var = tk.BooleanVar(value=False)
-        self.vr_processing_check = Checkbutton(vr_frame, text="VR処理(180度SBS形式)", variable=self.vr_processing_var)
+        self.vr_processing_check = Checkbutton(vr_frame, text="VR処理(180度SBS形式)", variable=self.vr_processing_var, command=self.on_vr_mode_toggle)
         self.vr_processing_check.pack(side=tk.LEFT, padx=5)
         
-        self.vr_simple_mode_var = tk.BooleanVar(value=False)
-        self.vr_simple_mode_check = Checkbutton(vr_frame, text="簡易処理モード", variable=self.vr_simple_mode_var)
+        self.vr_simple_mode_var = tk.BooleanVar(value=True)  # デフォルトをTrueに変更
+        self.vr_simple_mode_check = Checkbutton(vr_frame, text="簡易処理モード(中央70%のみ)", variable=self.vr_simple_mode_var, state=tk.DISABLED)  # 変更不可に設定
         self.vr_simple_mode_check.pack(side=tk.LEFT, padx=5)
 
         control_frame = tk.Frame(main_frame, pady=10)
@@ -386,12 +386,73 @@ class MosaicRemoverApp:
 
         self.console_text = scrolledtext.ScrolledText(lada_info_frame, height=5, state=tk.DISABLED)
         self.console_text.pack(fill=tk.BOTH, expand=True, pady=10)
-    
-    def split_vr_video(self, input_file, unique_id):
-        """VR映像を18分割し、音声を抽出(分割時 h264_nvenc + 高品質)
-           簡易モードの場合は、左2領域・右2領域を結合したファイルも作成"""
         
-        # 1. 音声を抽出 (変更なし)
+    def on_vr_mode_toggle(self):
+        """VRモード切り替え時の処理"""
+        if self.vr_processing_var.get():
+            # VRモードON: 簡易処理モードを強制ON
+            self.vr_simple_mode_var.set(True)
+            self.vr_simple_mode_check.config(state=tk.DISABLED)
+            self.write_log("VRモード有効化: 簡易処理モード(中央70%)で動作")
+        else:
+            # VRモードOFF: 簡易処理モードのチェックは維持するが操作不可のまま
+            pass
+    
+    def apply_vr_undistortion(self, input_file, output_file, unique_id):
+        """180度SBS映像 - 中央領域を抽出（面積約70%）"""
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"VR映像の中央領域を抽出中（面積70%）...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("VR中央領域抽出開始（面積70%）")
+        
+        # 面積70%なら縦横83.7%（√0.7 ≈ 0.837）
+        crop_center_cmd = [
+            'ffmpeg', '-y', '-i', input_file,
+            '-vf', 'crop=iw*0.837:ih*0.837:iw*0.0815:ih*0.0815',
+            '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18',
+            '-an',
+            output_file
+        ]
+        subprocess.run(crop_center_cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        self.write_log("VR中央領域抽出完了")
+
+    def apply_vr_distortion(self, input_file, output_file, unique_id):
+        """LADA処理済み中央領域を元動画の同じ位置に合成"""
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"処理済み領域を元動画に合成中...\n")
+        self.console_text.config(state=tk.DISABLED)
+        self.write_log("元動画への合成開始")
+        
+        # 元の切り出しファイルを探す
+        trimmed_file = None
+        for file in os.listdir(self.output_dir):
+            if file.startswith(f'trimmed_{unique_id}') and file.endswith('.mp4'):
+                trimmed_file = os.path.join(self.output_dir, file)
+                break
+        
+        if not trimmed_file or not os.path.exists(trimmed_file):
+            self.write_log("エラー: 元の切り出し動画が見つかりません")
+            raise Exception("元の切り出し動画が見つかりません")
+        
+        # LADA処理済み中央領域を元動画の中央に重ねる
+        overlay_cmd = [
+            'ffmpeg', '-y',
+            '-i', trimmed_file,  # 元動画（背景）
+            '-i', input_file,    # LADA処理済み中央部
+            '-filter_complex', '[0:v][1:v]overlay=(W-w)/2:(H-h)/2[v]',
+            '-map', '[v]',
+            '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18',
+            output_file
+        ]
+        subprocess.run(overlay_cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        self.write_log("元動画への合成完了")
+
+    def split_vr_video(self, input_file, unique_id):
+        """VR映像処理 - 中央領域のみ抽出（簡易モード専用）"""
+        
+        # 1. 音声を抽出
         audio_file = os.path.join(self.output_dir, f'{unique_id}_audio.aac')
         extract_audio_command = [
             'ffmpeg', '-y', '-i', input_file,
@@ -410,182 +471,73 @@ class MosaicRemoverApp:
             self.write_log("音声抽出失敗または音声トラックなし")
             audio_file = None
         
-        # 2. 18分割のクロップ情報を定義 (変更なし)
-        parts_info = [
-            ('left-up-left', '0:0'), ('left-up-center', 'iw/6:0'), ('left-up-right', '2*iw/6:0'),
-            ('left-mid-left', '0:ih/3'), ('left-mid-center', 'iw/6:ih/3'), ('left-mid-right', '2*iw/6:ih/3'),
-            ('left-down-left', '0:2*ih/3'), ('left-down-center', 'iw/6:2*ih/3'), ('left-down-right', '2*iw/6:2*ih/3'),
-            ('right-up-left', '3*iw/6:0'), ('right-up-center', '4*iw/6:0'), ('right-up-right', '5*iw/6:0'),
-            ('right-mid-left', '3*iw/6:ih/3'), ('right-mid-center', '4*iw/6:ih/3'), ('right-mid-right', '5*iw/6:ih/3'),
-            ('right-down-left', '3*iw/6:2*ih/3'), ('right-down-center', '4*iw/6:2*ih/3'), ('right-down-right', '5*iw/6:2*ih/3'),
-        ]
-        
-        filter_complex = ''
-        map_args = []
-        
-        for name, pos in parts_info:
-            filter_complex += f'[0:v]crop=iw/6:ih/3:{pos}[{name}];'
-            map_args.extend(['-map', f'[{name}]', os.path.join(self.output_dir, f'{unique_id}_{name}.mp4')])
-        
-        filter_complex = filter_complex.rstrip(';')
-        
-        ffmpeg_options = [
-            '-c:v', 'h264_nvenc',
-            '-preset', 'p4',
-            '-cq', '18',
-            '-rc-lookahead', '20',
-            '-g', '150',
-            '-an', 
-        ]
-        
-        ffmpeg_command = ['ffmpeg', '-y', '-i', input_file, 
-                          '-filter_complex', filter_complex] + ffmpeg_options + map_args
-        
-        # 3. 分割実行
+        # 2. 中央領域を抽出
         self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"VR映像を18分割中 (h264_nvenc)...\n")
+        self.console_text.insert(tk.END, f"VR簡易モード: 中央領域のみ抽出\n")
         self.console_text.config(state=tk.DISABLED)
-        self.write_log("VR映像分割開始 (h264_nvenc)")
-        self.write_log(f"FFmpegコマンド (分割): {' '.join(ffmpeg_command)}")
+        self.write_log("VR簡易モード: 中央領域抽出開始")
         
-        subprocess.run(ffmpeg_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        center_file = os.path.join(self.output_dir, f'{unique_id}_center.mp4')
+        self.apply_vr_undistortion(input_file, center_file, unique_id)
         
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"VR映像分割完了\n")
-        self.console_text.config(state=tk.DISABLED)
-        self.write_log("VR映像分割完了")
+        parts = ['center']
         
-        # ★ 4. 簡易モードの場合、left-mid-center + left-down-center と right-mid-center + right-down-center を結合
-        is_simple_mode = self.vr_simple_mode_var.get()
-        if is_simple_mode:
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"簡易モード: 対象領域を結合中...\n")
-            self.console_text.config(state=tk.DISABLED)
-            self.write_log("簡易モード: 対象領域を結合開始")
-            
-            # 左側2領域を縦に結合
-            left_combined_file = os.path.join(self.output_dir, f'{unique_id}_left_combined.mp4')
-            left_combine_command = [
-                'ffmpeg', '-y',
-                '-i', os.path.join(self.output_dir, f'{unique_id}_left-mid-center.mp4'),
-                '-i', os.path.join(self.output_dir, f'{unique_id}_left-down-center.mp4'),
-                '-filter_complex', '[0:v][1:v]vstack=2[v]',
-                '-map', '[v]',
-                '-c:v', 'h264_nvenc',
-                '-preset', 'p4',
-                '-cq', '18',
-                left_combined_file
-            ]
-            subprocess.run(left_combine_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            self.write_log(f"左側結合完了: {left_combined_file}")
-            
-            # 右側2領域を縦に結合
-            right_combined_file = os.path.join(self.output_dir, f'{unique_id}_right_combined.mp4')
-            right_combine_command = [
-                'ffmpeg', '-y',
-                '-i', os.path.join(self.output_dir, f'{unique_id}_right-mid-center.mp4'),
-                '-i', os.path.join(self.output_dir, f'{unique_id}_right-down-center.mp4'),
-                '-filter_complex', '[0:v][1:v]vstack=2[v]',
-                '-map', '[v]',
-                '-c:v', 'h264_nvenc',
-                '-preset', 'p4',
-                '-cq', '18',
-                right_combined_file
-            ]
-            subprocess.run(right_combine_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            self.write_log(f"右側結合完了: {right_combined_file}")
-            
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"対象領域の結合完了\n")
-            self.console_text.config(state=tk.DISABLED)
-        
-        return [name for name, _ in parts_info], audio_file
-    
+        return parts, audio_file
+
     def merge_vr_video(self, unique_id, parts, output_file, audio_file):
-        """VR処理済み映像を結合し、音声を合成（結合時 h264_nvenc + 高品質）"""
+        """VR処理済み中央領域を元動画に合成して音声を追加"""
         
-        input_args = []
-        for part in parts:
-            input_args.extend(['-i', os.path.join(self.output_dir, f'{unique_id}_{part}_processed.mp4')])
+        # LADA処理済みの中央領域ファイルを探す
+        center_processed = None
+        for file in os.listdir(self.output_dir):
+            if file.startswith(f'{unique_id}_center') and 'lada' in file and file.endswith('.mp4'):
+                center_processed = os.path.join(self.output_dir, file)
+                break
         
+        if not center_processed or not os.path.exists(center_processed):
+            self.write_log("エラー: LADA処理済みファイルが見つかりません")
+            raise Exception("LADA処理済みファイルが見つかりません")
+        
+        # 中央領域を元動画に合成
+        temp_video = os.path.join(self.output_dir, f'{unique_id}_temp_composited.mp4')
+        self.apply_vr_distortion(center_processed, temp_video, unique_id)
+        
+        # 音声を合成
         if audio_file and os.path.exists(audio_file):
-            input_args.extend(['-i', audio_file])
-        
-        filter_complex = """
-    [0:v][1:v][2:v]hstack=3[left_top];
-    [3:v][4:v][5:v]hstack=3[left_mid];
-    [6:v][7:v][8:v]hstack=3[left_bot];
-    [left_top][left_mid][left_bot]vstack=3[left_eye];
-
-    [9:v][10:v][11:v]hstack=3[right_top];
-    [12:v][13:v][14:v]hstack=3[right_mid];
-    [15:v][16:v][17:v]hstack=3[right_bot];
-    [right_top][right_mid][right_bot]vstack=3[right_eye];
-
-    [left_eye][right_eye]hstack=2[v]
-    """
-        
-        video_codec_options = [
-            '-c:v', 'h264_nvenc', 
-            '-preset', 'p4', 
-            '-cq', '18', 
-            '-rc-lookahead', '20',
-            '-g', '150',
-        ]
-
-        # FFmpegコマンドの構築
-        if audio_file and os.path.exists(audio_file):
-            ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
-                '-filter_complex', filter_complex.strip(),
-                '-map', '[v]', 
-                '-map', f'{len(parts)}:a', 
-            ] + video_codec_options + [ 
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-shortest',
-                output_file
+            final_merge_cmd = [
+                'ffmpeg', '-y', '-i', temp_video, '-i', audio_file,
+                '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                '-shortest', output_file
             ]
+            subprocess.run(final_merge_cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.write_log("音声合成完了")
+            
+            # 音声ファイル削除
+            os.remove(audio_file)
+            self.write_log(f"音声ファイル削除: {audio_file}")
         else:
-            ffmpeg_command = ['ffmpeg', '-y'] + input_args + [
-                '-filter_complex', filter_complex.strip(),
-                '-map', '[v]',
-            ] + video_codec_options + [
-                output_file
-            ]
+            # 音声がない場合はそのまま移動
+            os.rename(temp_video, output_file)
         
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"VR映像を結合中 (h264_nvenc)...\n")
-        self.console_text.config(state=tk.DISABLED)
-        self.write_log("VR映像結合開始 (h264_nvenc)")
-        
-        # FFmpegコマンドをログに出力
-        self.write_log(f"FFmpegコマンド (結合): {' '.join(ffmpeg_command)}")
-        
-        try:
-            result = subprocess.run(
-                ffmpeg_command, 
-                check=True, 
-                capture_output=True,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            
-            self.console_text.config(state=tk.NORMAL)
-            self.console_text.insert(tk.END, f"VR映像結合完了\n")
-            self.console_text.config(state=tk.DISABLED)
-            self.write_log("VR映像結合完了")
-            
-        except subprocess.CalledProcessError as e:
-            self.write_log(f"FFmpegエラー出力: {e.stderr}")
-            raise
-        
-        # ★ 追加: 音声ファイルを削除
-        if audio_file and os.path.exists(audio_file):
+        # 一時ファイルを削除
+        if os.path.exists(temp_video):
             try:
-                os.remove(audio_file)
-                self.write_log(f"音声ファイル削除: {audio_file}")
-            except OSError as e:
-                self.write_log(f"音声ファイル削除失敗: {audio_file}. エラー: {e}")
+                os.remove(temp_video)
+            except:
+                pass
+        
+        # LADA処理済みファイルを削除
+        if os.path.exists(center_processed):
+            os.remove(center_processed)
+            self.write_log(f"LADA処理済みファイル削除: {os.path.basename(center_processed)}")
+        
+        # 中央抽出ファイルを削除
+        center_file = os.path.join(self.output_dir, f'{unique_id}_center.mp4')
+        if os.path.exists(center_file):
+            os.remove(center_file)
+            self.write_log(f"中央抽出ファイル削除: center.mp4")
+        
+        self.write_log("VR合成処理完了")
 
     def abort_processing(self):
         """処理を中断し、LADAプロセスをKILLしてバッチループも中止する"""
@@ -1227,196 +1179,61 @@ class MosaicRemoverApp:
             is_vr_mode = self.vr_processing_var.get()
             
             if is_vr_mode:
-                # VR処理モード
+                # VR処理モード（簡易専用）
                 self.console_text.config(state=tk.NORMAL)
                 self.console_text.insert(tk.END, "VR処理モードで実行します\n")
                 self.console_text.config(state=tk.DISABLED)
                 self.write_log("VR処理モード開始")
                 
-                is_simple_mode = vr_simple_mode
-                
-                # 1. VR映像を18分割し、音声を抽出(簡易モード時は結合ファイルも作成)
+                # 1. VR映像を処理（中央領域抽出、音声抽出）
                 parts, audio_file = self.split_vr_video(trimmed_file_path, unique_id)
                 
-                # 2. 簡易モードの場合、結合ファイルを処理
-                if is_simple_mode:
-                    # 処理対象: left_combined, right_combined の2つのみ
-                    combined_parts = ['left_combined', 'right_combined']
-                    
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, f"簡易処理モード: {len(combined_parts)}ファイルを処理します\n")
-                    self.console_text.config(state=tk.DISABLED)
-                    self.write_log(f"簡易処理モード: {len(combined_parts)}ファイルを処理")
-                    
-                    for i, part_name in enumerate(combined_parts):
-                        part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
-                        
-                        self.console_text.config(state=tk.NORMAL)
-                        self.console_text.insert(tk.END, f"VR処理中({i+1}/{len(combined_parts)}): {part_name}\n")
-                        self.console_text.config(state=tk.DISABLED)
-                        self.status_label.config(text=f"VR処理中({i+1}/{len(combined_parts)})")
-                        self.write_log(f"VR結合ファイル処理中: {part_name} ({i+1}/{len(combined_parts)})")
-                        
-                        if self.ps_script_path:
-                            ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
-                            input_data = f"{part_file}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
-
-                            self.process = subprocess.Popen(
-                                ps_command,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT,
-                                text=True,
-                                bufsize=1,
-                                creationflags=subprocess.CREATE_NO_WINDOW
-                            )
-                            
-                            self.process.stdin.write(input_data)
-                            self.process.stdin.flush()
-                            self.process.stdin.close()
-
-                            for line in iter(self.process.stdout.readline, ''):
-                                self.console_text.config(state=tk.NORMAL)
-                                self.console_text.insert(tk.END, line)
-                                self.console_text.see(tk.END)
-                                self.console_text.config(state=tk.DISABLED)
-                                if not line.strip().startswith("Processing frames:"):
-                                    self.write_log(line.strip())
-                                self.root.update()
-
-                            self.process.stdout.close()
-                            self.process.wait()
-
-                            if self.process.returncode != 0:
-                                raise Exception(f"結合ファイル {part_name} の処理に失敗しました")
-                            
-                            # LADA処理済みファイルを検索してリネーム
-                            processed_found = False
-                            for file_name in os.listdir(self.output_dir):
-                                if (file_name.startswith(f'{unique_id}_{part_name}_lada_') and 
-                                    file_name.endswith('.mp4')):
-                                    lada_file_path = os.path.join(self.output_dir, file_name)
-                                    new_processed_name = f'{unique_id}_{part_name}_processed.mp4'
-                                    new_processed_path = os.path.join(self.output_dir, new_processed_name)
-                                    os.rename(lada_file_path, new_processed_path)
-                                    processed_found = True
-                                    self.write_log(f"LADA処理済みファイルをリネーム: {file_name} -> {new_processed_name}")
-                                    break
-                            
-                            if not processed_found:
-                                raise Exception(f"結合ファイル {part_name} のLADA処理済みファイルが見つかりませんでした")
-                            
-                            # 元の結合ファイルを削除
-                            if os.path.exists(part_file):
-                                os.remove(part_file)
-                                self.write_log(f"元の結合ファイル削除: {part_name}.mp4")
-                    
-                    # 3. 処理済み結合ファイルを分割して元のパーツに戻す
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, "処理済みファイルを分割中...\n")
-                    self.console_text.config(state=tk.DISABLED)
-                    self.write_log("処理済み結合ファイルを分割開始")
-                    
-                    # 左側処理済みファイルを2分割
-                    left_processed = os.path.join(self.output_dir, f'{unique_id}_left_combined_processed.mp4')
-                    left_split_command = [
-                        'ffmpeg', '-y', '-i', left_processed,
-                        '-filter_complex', '[0:v]crop=iw:ih/2:0:0[mid];[0:v]crop=iw:ih/2:0:ih/2[down]',
-                        '-map', '[mid]', os.path.join(self.output_dir, f'{unique_id}_left-mid-center_processed.mp4'),
-                        '-map', '[down]', os.path.join(self.output_dir, f'{unique_id}_left-down-center_processed.mp4'),
-                        '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18'
-                    ]
-                    subprocess.run(left_split_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    os.remove(left_processed)
-                    self.write_log("左側処理済みファイルを分割完了")
-                    
-                    # 右側処理済みファイルを2分割
-                    right_processed = os.path.join(self.output_dir, f'{unique_id}_right_combined_processed.mp4')
-                    right_split_command = [
-                        'ffmpeg', '-y', '-i', right_processed,
-                        '-filter_complex', '[0:v]crop=iw:ih/2:0:0[mid];[0:v]crop=iw:ih/2:0:ih/2[down]',
-                        '-map', '[mid]', os.path.join(self.output_dir, f'{unique_id}_right-mid-center_processed.mp4'),
-                        '-map', '[down]', os.path.join(self.output_dir, f'{unique_id}_right-down-center_processed.mp4'),
-                        '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '18'
-                    ]
-                    subprocess.run(right_split_command, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                    os.remove(right_processed)
-                    self.write_log("右側処理済みファイルを分割完了")
-                    
-                    # 未処理のパーツは元ファイルを_processedとしてリネーム
-                    parts_to_process = ['left-mid-center', 'left-down-center', 'right-mid-center', 'right-down-center']
-                    for part_name in parts:
-                        if part_name not in parts_to_process:
-                            part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
-                            processed_name = f'{unique_id}_{part_name}_processed.mp4'
-                            if os.path.exists(part_file):
-                                os.rename(part_file, os.path.join(self.output_dir, processed_name))
-                                self.write_log(f"未処理ファイルをリネーム: {part_name}")
+                # 2. 中央領域をLADA処理（1回のみ）
+                center_file = os.path.join(self.output_dir, f'{unique_id}_center.mp4')
                 
-                else:
-                    # 通常VRモード(18分割すべて処理)
-                    for i, part_name in enumerate(parts):
-                        part_file = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
-                        
-                        self.console_text.config(state=tk.NORMAL)
-                        self.console_text.insert(tk.END, f"VR処理中({i+1}/{len(parts)}): {part_name}\n")
-                        self.console_text.config(state=tk.DISABLED)
-                        self.status_label.config(text=f"VR処理中({i+1}/{len(parts)})")
-                        self.write_log(f"VRパート処理中: {part_name} ({i+1}/{len(parts)})")
-                        
-                        if self.ps_script_path:
-                            ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
-                            input_data = f"{part_file}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
-
-                            self.process = subprocess.Popen(
-                                ps_command,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT,
-                                text=True,
-                                bufsize=1,
-                                creationflags=subprocess.CREATE_NO_WINDOW
-                            )
-                            
-                            self.process.stdin.write(input_data)
-                            self.process.stdin.flush()
-                            self.process.stdin.close()
-
-                            for line in iter(self.process.stdout.readline, ''):
-                                self.console_text.config(state=tk.NORMAL)
-                                self.console_text.insert(tk.END, line)
-                                self.console_text.see(tk.END)
-                                self.console_text.config(state=tk.DISABLED)
-                                if not line.strip().startswith("Processing frames:"):
-                                    self.write_log(line.strip())
-                                self.root.update()
-
-                            self.process.stdout.close()
-                            self.process.wait()
-
-                            if self.process.returncode != 0:
-                                raise Exception(f"パート {part_name} の処理に失敗しました")
-                            
-                            processed_found = False
-                            for file_name in os.listdir(self.output_dir):
-                                if (file_name.startswith(f'{unique_id}_{part_name}_lada_') and 
-                                    file_name.endswith('.mp4')):
-                                    lada_file_path = os.path.join(self.output_dir, file_name)
-                                    new_processed_name = f'{unique_id}_{part_name}_processed.mp4'
-                                    new_processed_path = os.path.join(self.output_dir, new_processed_name)
-                                    os.rename(lada_file_path, new_processed_path)
-                                    processed_found = True
-                                    self.write_log(f"LADA処理済みファイルをリネーム: {file_name} -> {new_processed_name}")
-                                    break
-                            
-                            if not processed_found:
-                                raise Exception(f"パート {part_name} のLADA処理済みファイルが見つかりませんでした")
-                            
-                            if os.path.exists(part_file):
-                                os.remove(part_file)
-                                self.write_log(f"元の分割ファイル削除: {part_name}.mp4")
+                if not os.path.exists(center_file):
+                    raise Exception("中央領域ファイルが見つかりません")
                 
-                # 4. 処理済みパーツを結合し、音声を合成
+                self.console_text.config(state=tk.NORMAL)
+                self.console_text.insert(tk.END, f"VR中央領域を処理中...\n")
+                self.console_text.config(state=tk.DISABLED)
+                self.status_label.config(text="VR中央領域を処理中")
+                self.write_log("VR中央領域LADA処理開始")
+                
+                if self.ps_script_path:
+                    ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
+                    input_data = f"{center_file}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
+
+                    self.process = subprocess.Popen(
+                        ps_command,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    
+                    self.process.stdin.write(input_data)
+                    self.process.stdin.flush()
+                    self.process.stdin.close()
+
+                    for line in iter(self.process.stdout.readline, ''):
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, line)
+                        self.console_text.see(tk.END)
+                        self.console_text.config(state=tk.DISABLED)
+                        if not line.strip().startswith("Processing frames:"):
+                            self.write_log(line.strip())
+                        self.root.update()
+
+                    self.process.stdout.close()
+                    self.process.wait()
+
+                    if self.process.returncode != 0:
+                        raise Exception("VR中央領域の処理に失敗しました")
+                
+                # 3. 処理済みファイルを結合して音声合成
                 base_name = os.path.splitext(os.path.basename(input_file))[0]
                 start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
                 end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
@@ -1429,24 +1246,9 @@ class MosaicRemoverApp:
 
                 self.merge_vr_video(unique_id, parts, saved_processed_path, audio_file)
 
-                # 処理済みパートファイルと元の分割ファイルを確実に削除
-                for part_name in parts:
-                    # 処理済みファイルを削除
-                    processed_part = os.path.join(self.output_dir, f'{unique_id}_{part_name}_processed.mp4')
-                    if os.path.exists(processed_part):
-                        os.remove(processed_part)
-                        self.write_log(f"処理済みファイル削除: {part_name}_processed.mp4")
-                    
-                    # 元の分割ファイルも削除（ゴミファイル対策）
-                    original_part = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
-                    if os.path.exists(original_part):
-                        os.remove(original_part)
-                        self.write_log(f"元ファイル削除: {part_name}.mp4")
-
                 self.status_label.config(text=f"VR処理完了: {os.path.basename(saved_processed_path)}", fg="blue")
                 self.write_log(f"VR処理完了: {os.path.basename(saved_processed_path)}")
 
-                # ★ VR処理でも完了ダイアログを表示（追加）
                 if not self.is_batch_processing and self.show_completion_dialog_var.get():
                     messagebox.showinfo("完了", f"動画のモザイク除去が完了しました! (モード: VR)\n\nファイル名: " + os.path.basename(saved_processed_path))
                 self.write_log("動画のモザイク除去が完了しました!")
@@ -1578,6 +1380,77 @@ class MosaicRemoverApp:
                 if not self.save_trimmed_video_var.get():
                     os.remove(trimmed_file_path)
                     self.write_log(f"一時ファイル削除: {trimmed_file_path}")
+                    
+    def merge_vr_video(self, unique_id, parts, output_file, audio_file):
+        """VR処理済み中央領域を元動画に合成して音声を追加"""
+        
+        # LADA処理済みの中央領域ファイルを探す
+        center_processed = None
+        for file in os.listdir(self.output_dir):
+            # より柔軟な検索パターン
+            if (f'{unique_id}_center' in file and 
+                'lada' in file.lower() and 
+                file.endswith('.mp4')):
+                center_processed = os.path.join(self.output_dir, file)
+                self.write_log(f"LADA処理済みファイル検出: {file}")
+                break
+        
+        if not center_processed or not os.path.exists(center_processed):
+            # デバッグ: outputディレクトリ内のファイル一覧を表示
+            self.write_log("outputディレクトリ内のファイル一覧:")
+            for file in os.listdir(self.output_dir):
+                if unique_id in file:
+                    self.write_log(f"  - {file}")
+            
+            self.write_log("エラー: LADA処理済みファイルが見つかりません")
+            raise Exception(f"LADA処理済みファイルが見つかりません (unique_id: {unique_id})")
+        
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.insert(tk.END, f"LADA処理済みファイル: {os.path.basename(center_processed)}\n")
+        self.console_text.config(state=tk.DISABLED)
+        
+        # 中央領域を元動画に合成
+        temp_video = os.path.join(self.output_dir, f'{unique_id}_temp_composited.mp4')
+        self.apply_vr_distortion(center_processed, temp_video, unique_id)
+        
+        # 音声を合成
+        if audio_file and os.path.exists(audio_file):
+            final_merge_cmd = [
+                'ffmpeg', '-y', '-i', temp_video, '-i', audio_file,
+                '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                '-shortest', output_file
+            ]
+            subprocess.run(final_merge_cmd, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.write_log("音声合成完了")
+            
+            # 音声ファイル削除
+            os.remove(audio_file)
+            self.write_log(f"音声ファイル削除: {audio_file}")
+        else:
+            # 音声がない場合はそのまま移動
+            if os.path.exists(temp_video):
+                os.rename(temp_video, output_file)
+        
+        # 一時ファイルを削除
+        if os.path.exists(temp_video) and temp_video != output_file:
+            try:
+                os.remove(temp_video)
+                self.write_log(f"一時ファイル削除: temp_composited.mp4")
+            except:
+                pass
+        
+        # LADA処理済みファイルを削除
+        if os.path.exists(center_processed):
+            os.remove(center_processed)
+            self.write_log(f"LADA処理済みファイル削除: {os.path.basename(center_processed)}")
+        
+        # 中央抽出ファイルを削除
+        center_file = os.path.join(self.output_dir, f'{unique_id}_center.mp4')
+        if os.path.exists(center_file):
+            os.remove(center_file)
+            self.write_log(f"中央抽出ファイル削除: center.mp4")
+        
+        self.write_log("VR合成処理完了")
 
     def load_video(self, file_path):
         with self.cap_lock:
