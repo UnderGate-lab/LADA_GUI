@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (VR対応 20251002-6)")
+        self.root.title("動画モザイク除去 GUI (VR対応 20251003-1)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -260,7 +260,7 @@ class MosaicRemoverApp:
         self.tvai_menu = tk.OptionMenu(options_frame, self.tvai_var, "1", "2")
         self.tvai_menu.pack(side=tk.LEFT, padx=5)
         
-        quality_label = tk.Label(options_frame, text="映像品質CRF(5-30):")
+        quality_label = tk.Label(options_frame, text="映像品質(5-30):")
         quality_label.pack(side=tk.LEFT, padx=(15, 5))
         self.quality_var = tk.StringVar(value=self.cli_options["quality"])
         self.quality_var.trace_add("write", self.save_config_callback)
@@ -323,7 +323,7 @@ class MosaicRemoverApp:
         tk.Radiobutton(ffmpeg_frame, text="-c copy +genpts (タイムスタンプ修正)", variable=self.ffmpeg_option_var, value="copy_genpts").pack(side=tk.LEFT, padx=5)
         tk.Radiobutton(ffmpeg_frame, text="再エンコード (NVENC)", variable=self.ffmpeg_option_var, value="re_encode").pack(side=tk.LEFT, padx=5)
         
-        crf_label = tk.Label(ffmpeg_frame, text="映像品質CRF(5-30):")
+        crf_label = tk.Label(ffmpeg_frame, text="映像品質(5-30):")
         crf_label.pack(side=tk.LEFT, padx=(15, 5))
         self.crf_var = tk.StringVar(value=self.cli_options["crf_value"])
         self.crf_var.trace_add("write", self.save_config_callback)
@@ -504,8 +504,6 @@ class MosaicRemoverApp:
     def merge_vr_video(self, unique_id, parts, output_file, audio_file):
         """VR処理済み映像を結合し、音声を合成（結合時 h264_nvenc + 高品質）"""
         
-        # ... (input_args、filter_complex、video_codec_options の定義は変更なし) ...
-        
         input_args = []
         for part in parts:
             input_args.extend(['-i', os.path.join(self.output_dir, f'{unique_id}_{part}_processed.mp4')])
@@ -560,7 +558,7 @@ class MosaicRemoverApp:
         self.console_text.config(state=tk.DISABLED)
         self.write_log("VR映像結合開始 (h264_nvenc)")
         
-        # ★確認: FFmpegコマンドをログに出力
+        # FFmpegコマンドをログに出力
         self.write_log(f"FFmpegコマンド (結合): {' '.join(ffmpeg_command)}")
         
         try:
@@ -581,7 +579,7 @@ class MosaicRemoverApp:
             self.write_log(f"FFmpegエラー出力: {e.stderr}")
             raise
         
-        # 音声ファイルを削除 (ここは変更なし)
+        # ★ 追加: 音声ファイルを削除
         if audio_file and os.path.exists(audio_file):
             try:
                 os.remove(audio_file)
@@ -1079,15 +1077,6 @@ class MosaicRemoverApp:
             self.console_text.config(state=tk.DISABLED)
             self.root.update()
             
-            self.model_var.set(entry['model'])
-            self.tvai_var.set(entry['tvai'])
-            self.quality_var.set(str(entry['quality']))
-            self.ffmpeg_option_var.set(entry['ffmpeg_option'])
-            self.save_trimmed_video_var.set(entry['save_trimmed'])
-            self.crf_var.set(str(entry.get('crf_value', 19)))
-            self.vr_processing_var.set(entry.get('vr_processing', False))
-            self.vr_simple_mode_var.set(entry.get('vr_simple_mode', False))
-            
             processing_success = False  # 処理成功フラグを追加
             
             try:
@@ -1201,7 +1190,7 @@ class MosaicRemoverApp:
                 crf_value = self.crf_var.get()
                 ffmpeg_command = [
                     "ffmpeg", "-y", "-ss", start_time_str, "-to", end_time_str, "-i", input_file,
-                    "-c:v", "h264_nvenc", "-c:a", "aac", "-preset", "fast", "-rc", "vbr_hq", "-crf", crf_value,
+                    "-c:v", "h264_nvenc", "-c:a", "aac", "-preset", "fast", "-rc", "vbr_hq", "-cq", crf_value,
                     trimmed_file_path
                 ]
             elif option == "copy":
@@ -1433,21 +1422,34 @@ class MosaicRemoverApp:
                 end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
                 timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
                 cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
-                
+
                 saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_VR_unmosaiced.mp4"
                 saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
                 saved_processed_path = self.generate_unique_filepath(saved_processed_path)
-                
+
                 self.merge_vr_video(unique_id, parts, saved_processed_path, audio_file)
-                
-                # 処理済みパートファイルを削除
+
+                # 処理済みパートファイルと元の分割ファイルを確実に削除
                 for part_name in parts:
+                    # 処理済みファイルを削除
                     processed_part = os.path.join(self.output_dir, f'{unique_id}_{part_name}_processed.mp4')
                     if os.path.exists(processed_part):
                         os.remove(processed_part)
-                
+                        self.write_log(f"処理済みファイル削除: {part_name}_processed.mp4")
+                    
+                    # 元の分割ファイルも削除（ゴミファイル対策）
+                    original_part = os.path.join(self.output_dir, f'{unique_id}_{part_name}.mp4')
+                    if os.path.exists(original_part):
+                        os.remove(original_part)
+                        self.write_log(f"元ファイル削除: {part_name}.mp4")
+
                 self.status_label.config(text=f"VR処理完了: {os.path.basename(saved_processed_path)}", fg="blue")
                 self.write_log(f"VR処理完了: {os.path.basename(saved_processed_path)}")
+
+                # ★ VR処理でも完了ダイアログを表示（追加）
+                if not self.is_batch_processing and self.show_completion_dialog_var.get():
+                    messagebox.showinfo("完了", f"動画のモザイク除去が完了しました! (モード: VR)\n\nファイル名: " + os.path.basename(saved_processed_path))
+                self.write_log("動画のモザイク除去が完了しました!")
                 
             else:
                 # 通常の2D処理モード
@@ -1522,37 +1524,37 @@ class MosaicRemoverApp:
                             self.console_text.insert(tk.END, f"ファイル名の変更に失敗しました: {e}\n")
                             self.console_text.config(state=tk.DISABLED)
                             self.write_log(f"ファイル名の変更に失敗しました: {e}")
+                
+                # 切り出し動画の保存処理
+                if self.save_trimmed_video_var.get():
+                    base_name = os.path.splitext(os.path.basename(input_file))[0]
+                    start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
+                    end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
+                    timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
+                    saved_trimmed_name = f"{base_name}_{timestamp_tag}_trimmed{trimmed_file_ext}"
+                    saved_trimmed_path = os.path.join(self.output_dir, saved_trimmed_name)
+                    saved_trimmed_path = self.generate_unique_filepath(saved_trimmed_path)
+                    saved_trimmed_name = os.path.basename(saved_trimmed_path)
+                    try:
+                        os.rename(trimmed_file_path, saved_trimmed_path)
+                        self.status_label.config(text=f"切り出し動画を保存しました: {saved_trimmed_name}", fg="blue")
+                        self.write_log(f"切り出し動画を保存しました: {saved_trimmed_name}")
+                    except Exception as e:
+                        self.status_label.config(text=f"切り出し動画が見つからず、保存できませんでした: {e}", fg="red")
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, f"切り出し動画が見つからず、保存できませんでした: {e}\n")
+                        self.console_text.config(state=tk.DISABLED)
+                        self.write_log(f"切り出し動画が見つからず、保存できませんでした: {e}")
+                else:
+                    if os.path.exists(trimmed_file_path):
+                        os.remove(trimmed_file_path)
+                        self.write_log(f"一時ファイル削除: {trimmed_file_path}")
+                
+                if not self.is_batch_processing and self.show_completion_dialog_var.get():
+                    mode_text = "VR" if is_vr_mode else "2D"
+                    messagebox.showinfo("完了", f"動画のモザイク除去が完了しました! (モード: {mode_text})\n\nファイル名: " + os.path.basename(saved_processed_path))
+                self.write_log("動画のモザイク除去が完了しました!")
             
-            # 切り出し動画の保存処理
-            if self.save_trimmed_video_var.get():
-                base_name = os.path.splitext(os.path.basename(input_file))[0]
-                start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
-                end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
-                timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
-                saved_trimmed_name = f"{base_name}_{timestamp_tag}_trimmed{trimmed_file_ext}"
-                saved_trimmed_path = os.path.join(self.output_dir, saved_trimmed_name)
-                saved_trimmed_path = self.generate_unique_filepath(saved_trimmed_path)
-                saved_trimmed_name = os.path.basename(saved_trimmed_path)
-                try:
-                    os.rename(trimmed_file_path, saved_trimmed_path)
-                    self.status_label.config(text=f"切り出し動画を保存しました: {saved_trimmed_name}", fg="blue")
-                    self.write_log(f"切り出し動画を保存しました: {saved_trimmed_name}")
-                except Exception as e:
-                    self.status_label.config(text=f"切り出し動画が見つからず、保存できませんでした: {e}", fg="red")
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, f"切り出し動画が見つからず、保存できませんでした: {e}\n")
-                    self.console_text.config(state=tk.DISABLED)
-                    self.write_log(f"切り出し動画が見つからず、保存できませんでした: {e}")
-            else:
-                if os.path.exists(trimmed_file_path):
-                    os.remove(trimmed_file_path)
-                    self.write_log(f"一時ファイル削除: {trimmed_file_path}")
-            
-            if not self.is_batch_processing and self.show_completion_dialog_var.get():
-                mode_text = "VR" if is_vr_mode else "2D"
-                messagebox.showinfo("完了", f"動画のモザイク除去が完了しました! (モード: {mode_text})\n\nファイル名: " + os.path.basename(saved_processed_path))
-            self.write_log("動画のモザイク除去が完了しました!")
-        
         except subprocess.CalledProcessError as e:
             self.status_label.config(text="エラーが発生しました", fg="red")
             self.console_text.config(state=tk.NORMAL)

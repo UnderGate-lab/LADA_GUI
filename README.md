@@ -79,7 +79,7 @@ ladaが動画ファイルのタイムスタンプにセンシティブなため�
 
 - コピーのみ：`-c copy`
 - コピー＋タイムスタンプ補正：`-c copy -fflags +genpts`
-- 再エンコード：`-c:v h264_nvenc -c:a aac -preset fast -rc vbr_hq -crf <設定値>`
+- 再エンコード：`-c:v h264_nvenc -c:a aac -preset fast -rc vbr_hq -cq <設定値>`
 
 ウィンドウの下方にlada本体の処理状況を表示しています。  
 エラーが発生した場合はこちらを参考にしてください。  
