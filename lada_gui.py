@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (VR対応 20251002-6)")
+        self.root.title("動画モザイク除去 GUI (VR対応 20251008-1)")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -250,14 +250,14 @@ class MosaicRemoverApp:
         model_label.pack(side=tk.LEFT, padx=(0, 5))
         self.model_var = tk.StringVar(value=self.cli_options["model_choice"])
         self.model_var.trace_add("write", self.save_config_callback)
-        self.model_menu = tk.OptionMenu(options_frame, self.model_var, "1", "2", "3")
+        self.model_menu = tk.OptionMenu(options_frame, self.model_var, "1 v2", "2 v3.1-accurate", "3 v3.1-fast")
         self.model_menu.pack(side=tk.LEFT, padx=5)
         
         tvai_label = tk.Label(options_frame, text="TVAIで画質向上:")
         tvai_label.pack(side=tk.LEFT, padx=(15, 5))
         self.tvai_var = tk.StringVar(value=self.cli_options["tvai_choice"])
         self.tvai_var.trace_add("write", self.save_config_callback)
-        self.tvai_menu = tk.OptionMenu(options_frame, self.tvai_var, "1", "2")
+        self.tvai_menu = tk.OptionMenu(options_frame, self.tvai_var, "1 Yes", "2 No")
         self.tvai_menu.pack(side=tk.LEFT, padx=5)
         
         quality_label = tk.Label(options_frame, text="映像品質(5-30):")
@@ -267,6 +267,15 @@ class MosaicRemoverApp:
         quality_values = [str(i) for i in range(5, 31)]
         self.quality_menu = tk.OptionMenu(options_frame, self.quality_var, *quality_values)
         self.quality_menu.pack(side=tk.LEFT, padx=5)
+
+        # 出力フォルダ設定を追加
+        output_folder_label = tk.Label(options_frame, text="出力フォルダ:")
+        output_folder_label.pack(side=tk.LEFT, padx=(15, 5))
+        self.output_folder_var = tk.StringVar(value=self.output_dir)
+        self.output_folder_entry = tk.Entry(options_frame, textvariable=self.output_folder_var, width=30)
+        self.output_folder_entry.pack(side=tk.LEFT, padx=5)
+        self.output_folder_button = tk.Button(options_frame, text="変更...", command=self.change_output_folder)
+        self.output_folder_button.pack(side=tk.LEFT, padx=5)
 
         preview_frame = tk.LabelFrame(main_frame, text="3. 処理範囲の指定", padx=10, pady=10)
         preview_frame.grid(row=2, column=0, sticky="nsew", pady=5)
@@ -387,6 +396,15 @@ class MosaicRemoverApp:
         self.console_text = scrolledtext.ScrolledText(lada_info_frame, height=5, state=tk.DISABLED)
         self.console_text.pack(fill=tk.BOTH, expand=True, pady=10)
         
+    def change_output_folder(self):
+        """出力フォルダを変更する"""
+        new_folder = filedialog.askdirectory(initialdir=self.output_dir)
+        if new_folder:
+            self.output_dir = new_folder
+            self.output_folder_var.set(new_folder)
+            self.save_config()
+            self.write_log(f"出力フォルダを変更しました: {new_folder}")
+    
     def on_vr_mode_toggle(self):
         """VRモード切り替え時の処理"""
         if self.vr_processing_var.get():
@@ -624,8 +642,8 @@ class MosaicRemoverApp:
         
         queue_entry = {
             'video_path': input_file,
-            'model': self.model_var.get(),
-            'tvai': self.tvai_var.get(),
+            'model': self.model_var.get().split()[0],  # 数値部分のみ保存
+            'tvai': self.tvai_var.get().split()[0],    # 数値部分のみ保存
             'quality': int(self.quality_var.get()),
             'start_frame': self.start_frame,
             'end_frame': min(self.end_frame, total_frames),
@@ -787,12 +805,22 @@ class MosaicRemoverApp:
                             model_value = line.split("=")[1]
                             if model_value in ["1", "2", "3"]:
                                 self.cli_options["model_choice"] = model_value
-                                self.model_var.set(model_value)
+                                # 表示用に説明付きの値を設定
+                                if model_value == "1":
+                                    self.model_var.set("1 v2")
+                                elif model_value == "2":
+                                    self.model_var.set("2 v3.1-accurate")
+                                elif model_value == "3":
+                                    self.model_var.set("3 v3.1-fast")
                         elif line.startswith("tvai="):
                             tvai_value = line.split("=")[1]
                             if tvai_value in ["1", "2"]:
                                 self.cli_options["tvai_choice"] = tvai_value
-                                self.tvai_var.set(tvai_value)
+                                # 表示用に説明付きの値を設定
+                                if tvai_value == "1":
+                                    self.tvai_var.set("1 Yes")
+                                elif tvai_value == "2":
+                                    self.tvai_var.set("2 No")
                         elif line.startswith("quality="):
                             quality = line.split("=")[1]
                             if quality.isdigit() and 5 <= int(quality) <= 30:
@@ -811,6 +839,11 @@ class MosaicRemoverApp:
                                 self.write_log(f"無効なCRF値: {crf}、デフォルト19を使用")
                                 self.cli_options["crf_value"] = "19"
                                 self.crf_var.set("19")
+                        elif line.startswith("output_dir="):
+                            output_dir = line.split("=")[1]
+                            if os.path.exists(output_dir):
+                                self.output_dir = output_dir
+                                self.output_folder_var.set(output_dir)
             except Exception as e:
                 self.write_log(f"設定ファイルの読み込みに失敗しました: {e}")
                 messagebox.showwarning("警告", f"設定ファイルの読み込みに失敗しました: {e}。デフォルト値で続行します。")
@@ -818,10 +851,11 @@ class MosaicRemoverApp:
     def save_config(self):
         try:
             with open(self.config_file, 'w') as f:
-                f.write(f"model={self.model_var.get()}\n")
-                f.write(f"tvai={self.tvai_var.get()}\n")
+                f.write(f"model={self.model_var.get().split()[0]}\n")  # 数値部分のみ保存
+                f.write(f"tvai={self.tvai_var.get().split()[0]}\n")    # 数値部分のみ保存
                 f.write(f"quality={self.quality_var.get()}\n")
                 f.write(f"crf={self.crf_var.get()}\n")
+                f.write(f"output_dir={self.output_dir}\n")  # 出力フォルダを保存
         except Exception as e:
             self.write_log(f"設定ファイルの保存に失敗しました: {e}")
             messagebox.showwarning("警告", f"設定ファイルの保存に失敗しました: {e}。手動で確認してください。")
@@ -937,8 +971,8 @@ class MosaicRemoverApp:
             
             queue_entry = {
                 'video_path': file_path,
-                'model': self.model_var.get(),
-                'tvai': self.tvai_var.get(),
+                'model': self.model_var.get().split()[0],  # 数値部分のみ保存
+                'tvai': self.tvai_var.get().split()[0],    # 数値部分のみ保存
                 'quality': int(self.quality_var.get()),
                 'start_frame': 0,
                 'end_frame': total_frames,
@@ -1201,8 +1235,9 @@ class MosaicRemoverApp:
                 self.write_log("VR中央領域LADA処理開始")
                 
                 if self.ps_script_path:
+                    # フルパスでLADAに渡す
                     ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
-                    input_data = f"{center_file}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
+                    input_data = f"{os.path.abspath(center_file)}\n{self.model_var.get().split()[0]}\n{self.tvai_var.get().split()[0]}\n{self.quality_var.get()}\n"
 
                     self.process = subprocess.Popen(
                         ps_command,
@@ -1238,7 +1273,7 @@ class MosaicRemoverApp:
                 start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
                 end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
                 timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
-                cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
+                cli_options_tag = f"model{self.model_var.get().split()[0]}_tvai{self.tvai_var.get().split()[0]}_quality{self.quality_var.get()}"
 
                 saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_VR_unmosaiced.mp4"
                 saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
@@ -1256,8 +1291,9 @@ class MosaicRemoverApp:
             else:
                 # 通常の2D処理モード
                 if self.ps_script_path:
+                    # フルパスでLADAに渡す
                     ps_command = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", self.ps_script_path]
-                    input_data = f"{trimmed_file_path}\n{self.model_var.get()}\n{self.tvai_var.get()}\n{self.quality_var.get()}\n"
+                    input_data = f"{os.path.abspath(trimmed_file_path)}\n{self.model_var.get().split()[0]}\n{self.tvai_var.get().split()[0]}\n{self.quality_var.get()}\n"
 
                     self.process = subprocess.Popen(
                         ps_command,
@@ -1310,7 +1346,7 @@ class MosaicRemoverApp:
                         start_time_str_renamed = self.format_time(start_time_sec).replace(':', '')
                         end_time_str_renamed = self.format_time(end_time_sec).replace(':', '')
                         timestamp_tag = f"{start_time_str_renamed}-{end_time_str_renamed}"
-                        cli_options_tag = f"model{self.model_var.get()}_tvai{self.tvai_var.get()}_quality{self.quality_var.get()}"
+                        cli_options_tag = f"model{self.model_var.get().split()[0]}_tvai{self.tvai_var.get().split()[0]}_quality{self.quality_var.get()}"
                         
                         saved_processed_name = f"{base_name}_{timestamp_tag}_{cli_options_tag}_unmosaiced.mp4"
                         saved_processed_path = os.path.join(self.output_dir, saved_processed_name)
@@ -1491,6 +1527,7 @@ class MosaicRemoverApp:
                 self.paused = True
                 self.play_pause_button.config(text="▶ 再生")
                 self.on_progress_update()
+                self.update_time_labels()
                 self.write_log(f"動画読み込み成功: {file_path}, FPS: {self.video_fps}, 総フレーム: {self.video_total_frames}")
             except Exception as e:
                 self.write_log(f"動画読み込みエラー: {e}")

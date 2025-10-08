@@ -1,5 +1,6 @@
 # Script by: hong_test, Teiji
 # v1.02 (Final version with overwrite protection)
+# Modified: Output to same folder as input file
 
 # LADA Launcher with CUDA and TVAI Support
 param()
@@ -76,11 +77,6 @@ if (-not (Test-Path $LadaCli)) {
     Write-Host "ERROR: lada-cli not found at $LadaCli" -ForegroundColor Red
     Read-Host "Press Enter to exit" 
     exit
-}
-
-# Create output directory
-if (-not (Test-Path "output")) {
-    New-Item -ItemType Directory -Path "output" | Out-Null
 }
 
 # Main processing loop
@@ -221,6 +217,9 @@ else:
         }
     } while (-not $VideoFile)
 
+    # Get output directory (same as input file directory)
+    $OutputDir = Split-Path -Parent $VideoFile
+
     # Get model choices (only on first run or if not previously set)
     if (-not $DetectChoice) {
         Write-Host ""
@@ -304,7 +303,7 @@ else:
     $FileNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($VideoFile)
     $FileExt = [System.IO.Path]::GetExtension($VideoFile)
     
-    $BaseOutputFileNoExt = "output\${FileNameWithoutExt}_lada_${DetectSuffix}Q${Quality}"
+    $BaseOutputFileNoExt = "${OutputDir}\${FileNameWithoutExt}_lada_${DetectSuffix}Q${Quality}"
     $Suffix = 0
     $OutputFile = "${BaseOutputFileNoExt}${FileExt}"
     while (Test-Path $OutputFile) {
@@ -313,7 +312,7 @@ else:
     }
     
     # Prepare TVAI output paths with a numerical suffix if file exists
-    $TvaiBaseOutputFileNoExt = "output\${FileNameWithoutExt}_lada_${DetectSuffix}Q${Quality}+${TvaiModel}${TvaiScale}"
+    $TvaiBaseOutputFileNoExt = "${OutputDir}\${FileNameWithoutExt}_lada_${DetectSuffix}Q${Quality}+${TvaiModel}${TvaiScale}"
     $Suffix = 0
     $TvaiOutputFile = "${TvaiBaseOutputFileNoExt}${FileExt}"
     while (Test-Path $TvaiOutputFile) {
