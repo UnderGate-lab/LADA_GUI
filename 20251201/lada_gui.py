@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("動画モザイク除去 GUI (20251201-1)")
+        self.root.title("LADA GUI 20251208-1")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -421,6 +421,18 @@ class MosaicRemoverApp:
         else:
             # VRモードOFF: 簡易処理モードのチェックは維持するが操作不可のまま
             pass
+
+    # パスにスペースが含まれる場合の対策として、パスをリストではなく、
+    # 引用符付きの文字列として渡すヘルパー関数 (subprocess実行用)
+    def _quote_path(self, path):
+        # パスにスペースが含まれる場合は引用符で囲む
+        # subprocess.run/Popenの引数リストとして渡すため、ここでは引用符は不要
+        # ただし、FFmpeg/LADA-CLIの入力引数を直接操作する際は必要になる場合があるが、
+        # Pythonのsubprocessモジュールはリスト形式の場合、OS依存の引用符処理を
+        # 内部で行うため、基本はそのまま渡す。ただし、WinError 2の報告があるため、
+        # 実行ファイル以外（ファイルパス）を渡す際に明示的に引用符を付与する。
+        # 今回は、リスト形式で渡すため、このヘルパーは使用しない。
+        return path
     
     def apply_vr_undistortion(self, input_file, output_file, unique_id):
         """180度SBS映像 - 中央領域を抽出（面積約70%）"""
@@ -517,7 +529,7 @@ class MosaicRemoverApp:
         # LADAの出力ファイル名は一時的な命名規則にする
         # 処理完了後に正しいファイル名にリネームするため
         input_basename = os.path.splitext(os.path.basename(input_file))[0]
-        output_file_temp = os.path.join(self.output_dir, f"{input_basename}_lada_temp.mp4")
+        output_file_temp = os.path.join(self.output_dir, f"{input_basename}_lada_temp_{unique_id}.mp4")
         
         # モデル選択のマッピング
         model_choice = self.model_var.get().split()[0]  # 数値部分のみ取得
@@ -572,23 +584,25 @@ class MosaicRemoverApp:
             errors='replace'
         )
         
-        # 出力をリアルタイムで表示
+        # 出力をリアルタイムで表示 (「Processing frames:」と「ビデオの処理中:」で始まる行はログファイルから除外する)
         while True:
             line = process.stdout.readline()
             if not line and process.poll() is not None:
                 break
             if line:
-                if not line.strip().startswith("Processing frames:"):
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, line)
-                    self.console_text.see(tk.END)
-                    self.console_text.config(state=tk.DISABLED)
-                    self.write_log(line.strip())
-                else:
-                    self.console_text.config(state=tk.NORMAL)
-                    self.console_text.insert(tk.END, line)
-                    self.console_text.see(tk.END)
-                    self.console_text.config(state=tk.DISABLED)
+                line_stripped = line.strip()
+                # ★修正: 「Processing frames:」と「ビデオの処理中:」で始まる行はログに書き込まない
+                is_progress_message = line_stripped.startswith("Processing frames:") or \
+                                      line_stripped.startswith("ビデオの処理中:")
+                
+                self.console_text.config(state=tk.NORMAL)
+                self.console_text.insert(tk.END, line)
+                self.console_text.see(tk.END)
+                self.console_text.config(state=tk.DISABLED)
+
+                if not is_progress_message:
+                    self.write_log(line_stripped)
+                
                 self.root.update()
         
         return_code = process.wait()
@@ -637,6 +651,7 @@ class MosaicRemoverApp:
             for proc in psutil.process_iter(['name', 'cmdline']):
                 try:
                     if proc.info['name'] and 'ffmpeg' in proc.info['name'].lower():
+                        # 現在の出力フォルダに関連するFFmpegプロセスのみを対象とする
                         if proc.info['cmdline'] and any(self.output_dir in arg for arg in proc.info['cmdline']):
                             proc.kill()
                             self.write_log(f"FFMPEGプロセスを強制終了しました: PID {proc.pid}")
@@ -800,10 +815,8 @@ class MosaicRemoverApp:
                 
                 # 「そのまま」オプションの場合、範囲指定の表示を変更
                 if ffmpeg_option == 'no_trim':
-                    if entry['start_frame'] != 0 or entry['end_frame'] != int(entry.get('end_frame', 0)):
-                         range_display = "範囲指定あり(ERROR)"
-                    else:
-                        range_display = "全範囲"
+                    # no_trimの場合は、start_frame=0, end_frame=total_framesであることが前提
+                    range_display = "全範囲"
                 else:
                     range_display = f"Range:{start_time}-{end_time}"
                 
@@ -928,59 +941,25 @@ class MosaicRemoverApp:
             self.load_video(file_path)
 
     def drop_file(self, event):
-        file_paths_str = event.data
-        self.write_log(f"D&D raw data: {repr(file_paths_str)}")
-        
+        # tkinterdnd2はパスを {/path/to/file with space} の形式で返す
+        raw_paths = self.root.tk.splitlist(event.data)
         file_paths = []
         valid_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.ts', '.wmv', '.flv')
         
-        import re
-        
-        brace_pattern = r'\{([^}]+)\}'
-        braced_paths = re.findall(brace_pattern, file_paths_str)
-        
-        temp_str = file_paths_str
-        placeholder_map = {}
-        for i, path in enumerate(braced_paths):
-            placeholder = f"__PLACEHOLDER_{i}__"
-            temp_str = temp_str.replace(f"{{{path}}}", placeholder)
-            placeholder_map[placeholder] = path
-        
-        ideographic_space = '\u3000'
-        parts = re.split(r'[\s\u3000]+', temp_str)
-        
-        potential_paths = []
-        for part in parts:
-            if part.strip():
-                if part.startswith("__PLACEHOLDER_"):
-                    original_path = placeholder_map[part]
-                    potential_paths.append(original_path)
-                else:
-                    potential_paths.append(part)
-        
-        i = 0
-        while i < len(potential_paths):
-            current_path = potential_paths[i]
+        for path in raw_paths:
+            # tkinterdnd2はパスを {} で囲んで返すことがあり、それを除去する
+            if path.startswith('{') and path.endswith('}'):
+                path = path[1:-1]
             
-            if os.path.exists(current_path) and current_path.lower().endswith(valid_extensions):
-                file_paths.append(current_path)
-                self.write_log(f"Valid path found: {current_path}")
-                i += 1
-                continue
+            # Windowsの場合、パス区切り文字を正規化
+            path = os.path.normpath(path)
             
-            found = False
-            for j in range(i + 1, len(potential_paths) + 1):
-                combined_path = ideographic_space.join(potential_paths[i:j])
-                if os.path.exists(combined_path) and combined_path.lower().endswith(valid_extensions):
-                    file_paths.append(combined_path)
-                    self.write_log(f"Valid path found (reconstructed): {combined_path}")
-                    i = j
-                    found = True
-                    break
-            
-            if not found:
-                i += 1
-        
+            # 有効な動画ファイルであるかチェック
+            if os.path.exists(path) and path.lower().endswith(valid_extensions):
+                file_paths.append(path)
+            else:
+                self.write_log(f"D&Dスキップ: 無効なファイルまたは形式: {path}")
+
         if not file_paths:
             self.write_log("D&Dエラー: 有効なファイルが見つかりません")
             messagebox.showerror("エラー", "有効な動画ファイルがドロップされませんでした。")
@@ -1063,7 +1042,16 @@ class MosaicRemoverApp:
         
         # キューの項目に対して、改めて「そのまま」オプションと範囲指定のチェックを行う
         for entry in self.processing_queue:
-            if entry['ffmpeg_option'] == "no_trim" and (entry['start_frame'] != 0 or entry['end_frame'] != int(self.video_total_frames)):
+            with self.cap_lock:
+                cap_temp = cv2.VideoCapture(entry['video_path'])
+                if not cap_temp.isOpened():
+                    cap_temp.release()
+                    messagebox.showerror("エラー", f"キュー項目 '{os.path.basename(entry['video_path'])}' の動画ファイルを開けませんでした。キューから削除してください。")
+                    return
+                total_frames = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap_temp.release()
+
+            if entry['ffmpeg_option'] == "no_trim" and (entry['start_frame'] != 0 or entry['end_frame'] != total_frames):
                 messagebox.showerror("エラー", f"キュー項目 '{os.path.basename(entry['video_path'])}' は「そのまま」が選択されていますが、範囲指定があるため実行できません。キューから削除するか設定を変更してください。")
                 return
 
@@ -1120,12 +1108,16 @@ class MosaicRemoverApp:
             processing_success = False  # 処理成功フラグを追加
             
             try:
+                # バッチ処理の場合は、キューから取得したパラメータを使用
+                start_time_sec = entry['start_frame'] / entry['fps']
+                end_time_sec = entry['end_frame'] / entry['fps']
+                
                 self.processing_main(
                     entry['video_path'], 
-                    entry['start_frame'] / entry['fps'], 
-                    entry['end_frame'] / entry['fps'],
+                    start_time_sec, 
+                    end_time_sec,
                     entry.get('vr_simple_mode', False),
-                    entry.get('ffmpeg_option') # バッチ処理ではキューの設定を使用
+                    entry.get('ffmpeg_option')
                 )
                 
                 processing_success = True  # 処理が正常完了
@@ -1189,7 +1181,11 @@ class MosaicRemoverApp:
         input_filename = os.path.basename(input_file)
         self.write_log(f"LADA処理を開始しました {input_filename}")
         
-        self.processing_thread = threading.Thread(target=self.processing_main, args=(input_file, start_time_sec, end_time_sec, None, self.ffmpeg_option_var.get()))
+        # 単一処理の場合、GUIの現在の設定を使用
+        self.processing_thread = threading.Thread(target=self.processing_main, 
+                                                  args=(input_file, start_time_sec, end_time_sec, 
+                                                        self.vr_processing_var.get() and self.vr_simple_mode_var.get(), 
+                                                        self.ffmpeg_option_var.get()))
         self.processing_thread.daemon = True
         self.processing_thread.start()
 
@@ -1218,12 +1214,7 @@ class MosaicRemoverApp:
         return True
 
     # ★修正: ffmpeg_optionを引数に追加し、no_trimのロジックを修正
-    def processing_main(self, input_file, start_time_sec, end_time_sec, vr_simple_mode=None, ffmpeg_option=None):
-        # 単一処理の場合はGUIから取得、バッチ処理の場合は引数から取得
-        if vr_simple_mode is None:
-            vr_simple_mode = self.vr_simple_mode_var.get()
-        if ffmpeg_option is None:
-            ffmpeg_option = self.ffmpeg_option_var.get()
+    def processing_main(self, input_file, start_time_sec, end_time_sec, vr_simple_mode, ffmpeg_option):
         
         self.write_log(f"処理開始: {os.path.basename(input_file)}")
         time.sleep(1)
@@ -1233,7 +1224,6 @@ class MosaicRemoverApp:
         
         trimmed_base_name = f"trimmed_{unique_id}"
         trimmed_file_path = "" # 初期化
-        is_temp_file = True # デフォルトは一時ファイルを作成する前提
 
         try:
             # 1. 動画の切り出し/コピー (前処理)
@@ -1479,7 +1469,6 @@ class MosaicRemoverApp:
                 os.rename(temp_video, output_file)
         
         # ★修正: すべての一時ファイルを確実に削除
-        # trimmed_file_path は processing_main の finally で削除される
         
         # LADA処理済み一時ファイルを削除
         if os.path.exists(center_processed):
@@ -1513,12 +1502,21 @@ class MosaicRemoverApp:
                 self.cap = None
             
             try:
-                self.cap = cv2.VideoCapture(file_path)
-                if not self.cap.isOpened():
-                    messagebox.showerror("エラー", "動画ファイルを開けませんでした。別のファイルを選択してください。")
-                    self.cap = None
-                    self.video_path = ""
-                    return
+                # cv2.VideoCaptureはスペースを含むパスや日本語パスを扱う際、
+                # Windowsではopen(path, cv2.CAP_FFMPEG)またはVideoCapture(path)を使用することが多い。
+                # 失敗した場合、一時的にバイト配列としてオープンを試みる（日本語パス対策）
+                try:
+                    self.cap = cv2.VideoCapture(file_path)
+                    if not self.cap.isOpened():
+                        # 失敗した場合、バイト配列を試す（より安全な日本語/スペースパス処理の試み）
+                        file_path_bytes = file_path.encode('utf-8')
+                        self.cap = cv2.VideoCapture(file_path_bytes)
+                        if not self.cap.isOpened():
+                            raise Exception("動画ファイルを開けませんでした")
+                except Exception:
+                     # 最終的にバイト配列オープンも失敗したら例外を投げる
+                    raise Exception("動画ファイルを開けませんでした")
+                        
                 self.video_path = file_path
                 
                 self.video_total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -1691,7 +1689,7 @@ class MosaicRemoverApp:
         current_pos = self.current_frame
         new_pos = current_pos
         if event.keysym == 'Right':
-            new_pos = min(self.video_total_frames, current_pos + steps)
+            new_pos = min(self.video_total_frames - 1, current_pos + steps)
         elif event.keysym == 'Left':
             new_pos = max(0, current_pos - steps)
             
@@ -1732,7 +1730,7 @@ class MosaicRemoverApp:
     def move_one_frame_forward(self, event=None):
         if not self.cap or not self.cap.isOpened():
             return
-        new_frame = min(self.video_total_frames, self.current_frame + 1)
+        new_frame = min(self.video_total_frames - 1, self.current_frame + 1)
         self.current_frame = new_frame
         self.clear_frame_queue()
         with self.cap_lock:
@@ -1772,7 +1770,7 @@ class MosaicRemoverApp:
         if not self.cap or not self.cap.isOpened():
             return
         step_frames = int(self.video_fps)
-        new_frame = min(self.video_total_frames, self.current_frame + step_frames)
+        new_frame = min(self.video_total_frames - 1, self.current_frame + step_frames)
         self.current_frame = new_frame
         self.clear_frame_queue()
         with self.cap_lock:
@@ -1863,11 +1861,15 @@ class MosaicRemoverApp:
     def on_mouse_wheel(self, event):
         if not self.cap or not self.cap.isOpened():
             return
+        # Macではdeltaは-1/1、Windowsでは120/-120
+        delta = event.delta if event.num == 24 or event.num == 25 else event.delta // 120
+        
         step_frames = int(5 * self.video_fps)
-        if event.delta > 0:
+        if delta > 0:
             new_frame = max(0, self.current_frame - step_frames)
         else:
-            new_frame = min(self.video_total_frames, self.current_frame + step_frames)
+            new_frame = min(self.video_total_frames - 1, self.current_frame + step_frames)
+            
         self.current_frame = new_frame
         self.clear_frame_queue()
         with self.cap_lock:
@@ -2013,7 +2015,8 @@ class MosaicRemoverApp:
                 self.fullscreen_progress_canvas.coords(self.fullscreen_end_marker, end_pos, 0, end_pos, 30)
                 
                 total_time_sec = self.video_total_frames / self.video_fps if self.video_fps > 0 else 0
-                current_time_str = self.format_time(self.current_frame / self.video_fps if self.video_fps > 0 else 0)
+                current_time_sec = self.current_frame / self.video_fps if self.video_fps > 0 else 0
+                current_time_str = self.format_time(current_time_sec)
                 total_time_str = self.format_time(total_time_sec)
                 self.fullscreen_progress_canvas.itemconfig(self.fullscreen_progress_text, text=f"{current_time_str} / {total_time_str}")
             except Exception as e:
@@ -2143,7 +2146,8 @@ class MosaicRemoverApp:
         try:
             log_file_path = "LOG_LADA_GUI.txt"
             if os.path.exists(log_file_path):
-                os.startfile(log_file_path)
+                # os.startfile は Windows 専用の関数。クロスプラットフォーム対応が必要な場合は open/subprocess.run(opener) を使用
+                os.startfile(log_file_path) 
             else:
                 messagebox.showerror("エラー", "ログファイルが見つかりません: LOG_LADA_GUI.txt")
         except Exception as e:
