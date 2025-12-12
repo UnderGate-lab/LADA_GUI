@@ -18,7 +18,7 @@ from queue import Queue
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("LADA GUI 20251208-1")
+        self.root.title("LADA GUI 20251212-1")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
