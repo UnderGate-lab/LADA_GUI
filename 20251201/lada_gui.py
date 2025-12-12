@@ -252,7 +252,10 @@ class MosaicRemoverApp:
         model_label.pack(side=tk.LEFT, padx=(0, 5))
         self.model_var = tk.StringVar(value=self.cli_options["model_choice"])
         self.model_var.trace_add("write", self.save_config_callback)
-        self.model_menu = tk.OptionMenu(options_frame, self.model_var, "1 v2", "2 v3.1-accurate", "3 v3.1-fast")
+        # ★修正: 新しいモデルを追加
+        self.model_menu = tk.OptionMenu(options_frame, self.model_var, 
+                                        "1 v2", "2 v3.1-accurate", "3 v3.1-fast", 
+                                        "4 v4-accurate", "5 v4-fast")
         self.model_menu.pack(side=tk.LEFT, padx=5)
         
         quality_label = tk.Label(options_frame, text="映像品質(5-30):")
@@ -533,10 +536,13 @@ class MosaicRemoverApp:
         
         # モデル選択のマッピング
         model_choice = self.model_var.get().split()[0]  # 数値部分のみ取得
+        # ★修正: 新しいモデルに対応
         model_mapping = {
             "1": "lada_mosaic_detection_model_v2.pt",
             "2": "lada_mosaic_detection_model_v3.1_accurate.pt", 
-            "3": "lada_mosaic_detection_model_v3.1_fast.pt"
+            "3": "lada_mosaic_detection_model_v3.1_fast.pt",
+            "4": "lada_mosaic_detection_model_v4_accurate.pt", # 新しいaccurateモデル
+            "5": "lada_mosaic_detection_model_v4_fast.pt"    # 新しいfastモデル
         }
         
         detect_model = model_mapping.get(model_choice, "lada_mosaic_detection_model_v3.1_fast.pt")
@@ -801,7 +807,15 @@ class MosaicRemoverApp:
         for i, entry in enumerate(self.processing_queue):
             try:
                 filename = os.path.basename(entry['video_path'])
-                model = entry['model']
+                model_num = entry['model']
+                
+                # モデル番号から表示名を取得
+                model_display_map = {
+                    "1": "v2", "2": "v3.1-accurate", "3": "v3.1-fast",
+                    "4": "v4-accurate", "5": "v4-fast"
+                }
+                model_name = model_display_map.get(model_num, f"Unknown ({model_num})")
+                
                 quality = entry['quality']
                 fps = entry.get('fps', 30.0)
                 start_time = self.format_time(entry['start_frame'] / fps if fps > 0 else 0)
@@ -820,7 +834,7 @@ class MosaicRemoverApp:
                 else:
                     range_display = f"Range:{start_time}-{end_time}"
                 
-                display_text = (f"{i+1}. {filename}, Model:{model}, Quality:{quality}, "
+                display_text = (f"{i+1}. {filename}, Model:{model_num} ({model_name}), Quality:{quality}, "
                                f"{range_display}, FFmpeg:{ffmpeg_display}, CRF:{crf_value}, "
                                f"SaveTrim:{save_trimmed}, Mode:{vr_mode}, VRMode:{simple_mode}")
                 self.queue_listbox.insert(tk.END, display_text)
@@ -875,7 +889,8 @@ class MosaicRemoverApp:
                         line = line.strip()
                         if line.startswith("model="):
                             model_value = line.split("=")[1]
-                            if model_value in ["1", "2", "3"]:
+                            # ★修正: 新しいモデルに対応
+                            if model_value in ["1", "2", "3", "4", "5"]: 
                                 self.cli_options["model_choice"] = model_value
                                 # 表示用に説明付きの値を設定
                                 if model_value == "1":
@@ -884,6 +899,14 @@ class MosaicRemoverApp:
                                     self.model_var.set("2 v3.1-accurate")
                                 elif model_value == "3":
                                     self.model_var.set("3 v3.1-fast")
+                                elif model_value == "4": # 新規
+                                    self.model_var.set("4 v4-accurate")
+                                elif model_value == "5": # 新規
+                                    self.model_var.set("5 v4-fast")
+                            else:
+                                self.write_log(f"無効なモデル値: {model_value}、デフォルト1を使用")
+                                self.cli_options["model_choice"] = "1"
+                                self.model_var.set("1 v2") # デフォルト
                         elif line.startswith("quality="):
                             quality = line.split("=")[1]
                             if quality.isdigit() and 5 <= int(quality) <= 30:
@@ -1116,7 +1139,7 @@ class MosaicRemoverApp:
                     entry['video_path'], 
                     start_time_sec, 
                     end_time_sec,
-                    entry.get('vr_simple_mode', False),
+                    entry.get('vr_processing', False) and entry.get('vr_simple_mode', False),
                     entry.get('ffmpeg_option')
                 )
                 
