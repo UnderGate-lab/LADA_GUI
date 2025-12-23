@@ -19,7 +19,7 @@ import glob
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("LADA GUI 20251223-1")
+        self.root.title("LADA GUI 20251224-1")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -92,18 +92,29 @@ class MosaicRemoverApp:
         self.fullscreen_progress_text = None
 
     def scan_detection_models(self):
-        """_internal/model_weights フォルダから lada_mosaic_detection_model_*.pt を検索"""
-        pattern = os.path.join(self.model_weights_dir, "lada_mosaic_detection_model_*.pt")
-        model_files = glob.glob(pattern)
-        models = []
-        for file_path in model_files:
-            filename = os.path.basename(file_path)
-            # 表示用ラベルを作成（lada_mosaic_detection_model_ と .pt を除去）
-            label = filename.replace("lada_mosaic_detection_model_", "").replace(".pt", "")
-            models.append((label, file_path))
-        # 表示名でアルファベット順にソート
-        models.sort(key=lambda x: x[0])
-        return models
+            """_internal/model_weights フォルダから mosaic_detection_model を含む .pt ファイルを検索"""
+            # 検索条件を "mosaic_detection_model" を含むものに変更
+            pattern = os.path.join(self.model_weights_dir, "*mosaic_detection_model*.pt")
+            model_files = glob.glob(pattern)
+            models = []
+            
+            for file_path in model_files:
+                filename = os.path.basename(file_path)
+                
+                # 正規表現で mosaic_detection_model_XXX.pt の XXX 部分を抽出
+                # ファイル名に mosaic_detection_model_ が含まれている場合、その後ろから .pt までを取得
+                match = re.search(r"mosaic_detection_model_(.*?)\.pt", filename)
+                if match:
+                    label = match.group(1)
+                else:
+                    # 万が一形式が違う場合は、拡張子を除いたファイル名全体を表示
+                    label = os.path.splitext(filename)[0]
+                    
+                models.append((label, file_path))
+                
+            # 表示名（XXXの部分）でアルファベット順にソート
+            models.sort(key=lambda x: x[0])
+            return models
 
     def bind_keys(self, window):
         window.bind('<Right>', self.move_frame)
