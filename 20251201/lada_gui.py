@@ -19,7 +19,7 @@ import glob
 class MosaicRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("LADA GUI 20251224-1")
+        self.root.title("LADA GUI 20251226-1")
         self.root.geometry("1000x1000")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
@@ -544,134 +544,144 @@ class MosaicRemoverApp:
         return parts, audio_file
 
     def run_lada_cli(self, input_file, unique_id):
-        if not self.lada_cli_path or not os.path.exists(self.lada_cli_path):
-            raise FileNotFoundError(f"lada-cli.exeが見つかりません: {self.lada_cli_path}")
-        
-        input_basename = os.path.splitext(os.path.basename(input_file))[0]
-        output_file_temp = os.path.join(self.output_dir, f"{input_basename}_lada_temp_{unique_id}.mp4")
-        
-        detect_model_path = self.get_selected_detection_model_path()
-        if not detect_model_path or not os.path.exists(detect_model_path):
-            raise FileNotFoundError(f"選択された検出モデルが見つかりません: {detect_model_path}")
-        
-        restore_model_path = os.path.join(self.model_weights_dir, "lada_mosaic_restoration_model_generic_v1.2.pth")
-        if not os.path.exists(restore_model_path):
-            raise FileNotFoundError(f"復元モデルが見つかりません: {restore_model_path}")
-        
-        lada_command = [
-            self.lada_cli_path,
-            "--input", input_file,
-            "--output", output_file_temp,
-            "--codec", "hevc_nvenc",
-            "--crf", self.quality_var.get(),
-            "--mosaic-detection-model-path", detect_model_path,
-            "--mosaic-restoration-model-path", restore_model_path,
-            "--device", "cuda:0",
-            "--max-clip-length", "180"
-        ]
-        
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, f"LADA処理を開始します...\n実行コマンド: {' '.join(lada_command)}\n")
-        self.console_text.config(state=tk.DISABLED)
-        self.write_log(f"LADA処理開始: {' '.join(lada_command)}")
-        self.root.update()
-        
-        process = subprocess.Popen(
-            lada_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            encoding='cp932',
-            errors='replace'
-        )
-        
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                line_stripped = line.strip()
-                is_progress_message = line_stripped.startswith("Processing frames:") or \
-                                      line_stripped.startswith("ビデオの処理中:")
-                
-                self.console_text.config(state=tk.NORMAL)
-                self.console_text.insert(tk.END, line)
-                self.console_text.see(tk.END)
-                self.console_text.config(state=tk.DISABLED)
+            if not self.lada_cli_path or not os.path.exists(self.lada_cli_path):
+                raise FileNotFoundError(f"lada-cli.exeが見つかりません: {self.lada_cli_path}")
+            
+            input_basename = os.path.splitext(os.path.basename(input_file))[0]
+            output_file_temp = os.path.join(self.output_dir, f"{input_basename}_lada_temp_{unique_id}.mp4")
+            
+            detect_model_path = self.get_selected_detection_model_path()
+            if not detect_model_path or not os.path.exists(detect_model_path):
+                raise FileNotFoundError(f"選択された検出モデルが見つかりません: {detect_model_path}")
+            
+            restore_model_path = os.path.join(self.model_weights_dir, "lada_mosaic_restoration_model_generic_v1.2.pth")
+            if not os.path.exists(restore_model_path):
+                raise FileNotFoundError(f"復元モデルが見つかりません: {restore_model_path}")
+            
+            lada_command = [
+                self.lada_cli_path,
+                "--input", input_file,
+                "--output", output_file_temp,
+                "--codec", "hevc_nvenc",
+                "--crf", self.quality_var.get(),
+                "--mosaic-detection-model-path", detect_model_path,
+                "--mosaic-restoration-model-path", restore_model_path,
+                "--device", "cuda:0",
+                "--max-clip-length", "180"
+            ]
+            
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, f"LADA処理を開始します...\n実行コマンド: {' '.join(lada_command)}\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log(f"LADA処理開始: {' '.join(lada_command)}")
+            self.root.update()
+            
+            # 修正: self.process に代入してクラス全体からアクセス可能にする
+            self.process = subprocess.Popen(
+                lada_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                encoding='cp932',
+                errors='replace'
+            )
+            
+            try:
+                # 待機処理（ロジックは従来通り）
+                while True:
+                    line = self.process.stdout.readline()
+                    if not line and self.process.poll() is not None:
+                        break
+                    if line:
+                        line_stripped = line.strip()
+                        is_progress_message = line_stripped.startswith("Processing frames:") or \
+                                            line_stripped.startswith("ビデオの処理中:")
+                        
+                        self.console_text.config(state=tk.NORMAL)
+                        self.console_text.insert(tk.END, line)
+                        self.console_text.see(tk.END)
+                        self.console_text.config(state=tk.DISABLED)
 
-                if not is_progress_message:
-                    self.write_log(line_stripped)
+                        if not is_progress_message:
+                            self.write_log(line_stripped)
+                        
+                        self.root.update()
                 
-                self.root.update()
-        
-        return_code = process.wait()
-        
-        if return_code != 0:
-            raise Exception(f"lada-cliの実行に失敗しました (終了コード: {return_code})")
-        
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, "LADA処理が完了しました。\n")
-        self.console_text.config(state=tk.DISABLED)
-        self.write_log("LADA処理完了")
-        
-        return output_file_temp
+                return_code = self.process.wait()
+            finally:
+                # 終了または中断後は参照をクリア
+                self.process = None
+            
+            if return_code != 0:
+                # 中断された場合は is_running が False になっているのでそれで見分ける
+                if not self.is_running:
+                    self.write_log("LADA処理はユーザーによって中断されました。")
+                else:
+                    raise Exception(f"lada-cliの実行に失敗しました (終了コード: {return_code})")
+            
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, "LADA処理が完了しました。\n")
+            self.console_text.config(state=tk.DISABLED)
+            self.write_log("LADA処理完了")
+            
+            return output_file_temp
 
     def abort_processing(self):
-        if not (hasattr(self, 'is_running') and self.is_running) and \
-           not (hasattr(self, 'is_batch_processing') and self.is_batch_processing):
-            messagebox.showinfo("情報", "現在、処理は実行されていません。")
-            return
-        
-        if not messagebox.askyesno("確認", "現在実行中の処理を中断しますか?"):
-            return
-        
-        self.is_batch_processing = False
-        self.is_running = False
-        self.buffer_running = False
-        
-        if self.process and self.process.poll() is None:
-            try:
-                self.process.kill()
-                self.process.wait(timeout=3)
-                self.write_log("LADAプロセスを強制終了しました")
-            except subprocess.TimeoutExpired:
-                self.write_log("LADAプロセス終了タイムアウト")
-            except Exception as e:
-                self.write_log(f"LADAプロセス終了エラー: {e}")
-            finally:
-                self.process = None
-        
-        try:
-            import psutil
-            for proc in psutil.process_iter(['name', 'cmdline']):
+            if not (hasattr(self, 'is_running') and self.is_running) and \
+            not (hasattr(self, 'is_batch_processing') and self.is_batch_processing):
+                messagebox.showinfo("情報", "現在、処理は実行されていません。")
+                return
+            
+            if not messagebox.askyesno("確認", "現在実行中の処理を中断しますか?"):
+                return
+            
+            # 中断フラグをセット
+            self.is_batch_processing = False
+            self.is_running = False
+            self.buffer_running = False
+            
+            # 自分が起動したプロセス（self.process）が存在し、まだ動いている場合のみ終了
+            if hasattr(self, 'process') and self.process and self.process.poll() is None:
                 try:
-                    if proc.info['name'] and 'ffmpeg' in proc.info['name'].lower():
-                        if proc.info['cmdline'] and any(self.output_dir in arg for arg in proc.info['cmdline']):
-                            proc.kill()
-                            self.write_log(f"FFMPEGプロセスを強制終了しました: PID {proc.pid}")
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-        except ImportError:
-            self.write_log("警告: psutilが利用できないため、FFMPEGプロセスの完全な終了を保証できません")
-        except Exception as e:
-            self.write_log(f"FFMPEGプロセス検索エラー: {e}")
-        
-        self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
-        self.batch_button.config(state=tk.NORMAL)
-        self.queue_add_button.config(state=tk.NORMAL)
-        self.queue_view_button.config(state=tk.NORMAL)
-        self.root.bind('<Control-e>', self.add_to_queue)
-        
-        self.status_label.config(text="処理を中断しました", fg="red")
-        self.batch_count_label.config(text="")
-        self.console_text.config(state=tk.NORMAL)
-        self.console_text.insert(tk.END, "処理を中断しました。\n")
-        self.console_text.config(state=tk.DISABLED)
-        
-        self.write_log("処理を中断しました")
-        messagebox.showinfo("中断完了", "処理を中断しました。")
+                    pid = self.process.pid
+                    self.write_log(f"自分が起動したプロセス(PID: {pid})とその子プロセスを終了します...")
+                    
+                    if os.name == 'nt':
+                        # Windows: /T で子プロセス(ffmpeg等)も含むツリー全体を強制終了
+                        # 自分が fork した PID を指定するため、他で動いている lada-cli には干渉しません
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], 
+                                    capture_output=True, check=False, 
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
+                    else:
+                        self.process.kill()
+                    
+                    # 終了まで少し待機
+                    self.process.wait(timeout=3)
+                    self.write_log(f"PID {pid} のプロセスツリーを終了しました。")
+                except Exception as e:
+                    self.write_log(f"強制終了中にエラーが発生しました: {e}")
+                finally:
+                    self.process = None
+            else:
+                self.write_log("実行中の自分のプロセスは見つかりませんでした。")
+            
+            # UI状態の復帰
+            self.start_button.config(state=tk.NORMAL, text="処理開始 (単一)")
+            self.batch_button.config(state=tk.NORMAL)
+            self.queue_add_button.config(state=tk.NORMAL)
+            self.queue_view_button.config(state=tk.NORMAL)
+            self.root.bind('<Control-e>', self.add_to_queue)
+            
+            self.status_label.config(text="処理を中断しました", fg="red")
+            self.batch_count_label.config(text="")
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.insert(tk.END, "処理を中断しました。\n")
+            self.console_text.config(state=tk.DISABLED)
+            
+            self.write_log("中断完了。")
+            messagebox.showinfo("中断完了", "自分が起動した処理のみを安全に中断しました。")
         
     def add_to_queue(self, event=None):
         if self.is_batch_processing:
