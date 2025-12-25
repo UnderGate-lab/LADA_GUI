@@ -20,7 +20,7 @@
 
 ### （１）Pythonおよび追加パッケージのインストール
 
-Python[https://www.python.org/downloads/release/python-3139/]をインストールして下さい。  
+Python https://www.python.org/downloads/release/python-3139/ をインストールして下さい。  
 ※インストール済みの方は不要です。  
 
 そこ後、pip（Pythonのパッケージ管理ツール）を使用して追加パッケージをインストールしてください。
