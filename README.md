@@ -20,7 +20,7 @@
 
 ### （１）Pythonおよび追加パッケージのインストール
 
-Python[https://www.python.org/downloads/release/python-3139/]をインストールして下さい。  
+Python https://www.python.org/downloads/release/python-3139/ をインストールして下さい。  
 ※インストール済みの方は不要です。  
 
 そこ後、pip（Pythonのパッケージ管理ツール）を使用して追加パッケージをインストールしてください。
@@ -108,6 +108,8 @@ ladaが動画ファイルのタイムスタンプにセンシティブなため�
 
 ## ７．VR映像対応（試行錯誤中、4KはOKですが8KはNGかも）
 
+zelfansさんのVR用ツールがおすすめです。https://codeberg.org/zelefans/vr_remove_mosaic
+
 ### （１）簡易処理モード  
 現在の実装は、左右の中央70%のエリアのみのLADAでデモザイク処理してその後元映像にオーバーレイ合成します。  
 周辺部付近のモザイクは残りますが、2Dと同等の処理速度を実現しています   
@@ -137,6 +139,8 @@ LADAインストールフォルダの以下のフォルダの検出ファイル�
 _internal\model_weights
 ```
 `mosaic_detection_model`を含むファイル名を検出モデルとして識別します。
+
+zelfansさんのVR用の検出モデル（v2_accurate）がおすすめです。https://huggingface.co/zelefans/vrmr/tree/main
 
 ## 更新履歴
 
