@@ -1,5 +1,7 @@
 # LADA_GUI解説（公式 0.8.1 以降の LADA Windows版EXEに対応）
 
+<img width="1497" height="1542" alt="image" src="https://github.com/user-attachments/assets/24b187b6-f208-4e3b-b2e7-6b8d0d40453f" />
+
 ## １．主な機能
 
 - D&Dによる複数ファイル指定
