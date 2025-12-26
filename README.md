@@ -15,7 +15,7 @@
 
 ## ３．インストール
 
-Releaseの`lada_gui.exe`をLADAインストールフォルダ（lada-cli.exeがあるフォルダ）にコピーします。
+[Release](https://github.com/UnderGate-lab/LADA_GUI/releases)の`lada_gui.exe`をLADAインストールフォルダ（lada-cli.exeがあるフォルダ）にコピーします。
 
 ## ４．操作方法
 
