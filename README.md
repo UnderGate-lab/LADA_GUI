@@ -1,4 +1,4 @@
-# LADA_GUI解説（公式 0.8.1 以降の LADA Windows版パッケージに対応）
+# LADA_GUI解説（公式 0.8.1 以降の LADA Windows版EXEに対応）
 
 ## １．主な機能
 
