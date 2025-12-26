@@ -1,6 +1,6 @@
 # LADA_GUI解説（公式 0.8.1 以降の LADA Windows版EXEに対応）
 
-<img width="1497" height="1542" alt="image" src="https://github.com/user-attachments/assets/24b187b6-f208-4e3b-b2e7-6b8d0d40453f" />
+<img width="1494" height="1539" alt="image" src="https://github.com/user-attachments/assets/6dc366bf-5467-47c2-84e4-73f2d92c40ff" />
 
 ## １．主な機能
 
