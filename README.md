@@ -1,6 +1,7 @@
-# LADA_GUI解説（公式 0.8.1 以降の LADA Windows版EXEに対応）
+# LADA_GUI解説（公式 LADA 0.10.0 Windows版EXEに対応）
 
-<img width="1494" height="1539" alt="image" src="https://github.com/user-attachments/assets/6dc366bf-5467-47c2-84e4-73f2d92c40ff" />
+<img width="1675" height="1534" alt="image" src="https://github.com/user-attachments/assets/146d0dfc-9cd5-4082-87f0-567706d511c4" />
+
 
 ## １．主な機能
 
@@ -102,6 +103,7 @@ zelefansさんのVR用の検出モデル（v2_accurate）がおすすめです�
 
 ## 更新履歴
 
+- 20260102 LADA 0.10.0 に対応、顔モザイク検出オプション、エンコードプリセットオプション（DeepSeek）
 - 20251227 EXE化（Gemini 3.0）
 - 20251226 中断時の確実なプロセス終了（Gemini 3.0）
 - 20251223 検出モデルファイルの起動時読み込み（Grok）
