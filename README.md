@@ -99,8 +99,6 @@ _internal\model_weights
 ```
 `mosaic_detection_model`を含むファイル名を検出モデルとして識別します。
 
-zelefansさんのVR用の検出モデル（v2_accurate）がおすすめです。https://huggingface.co/zelefans/vrmr/tree/main
-
 ## 更新履歴
 
 - 20260102 LADA 0.10.0 に対応、顔モザイク検出オプション、エンコードプリセットオプション（DeepSeek）
